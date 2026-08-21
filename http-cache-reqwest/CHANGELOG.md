@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-alpha.8] - 2026-08-20
+
+### Added
+
+- `middlewest` feature selecting `middlewest` as an alternative client backend to `reqwest-middleware`; the two backends are mutually exclusive and `reqwest-middleware` remains the default
+- `redirect` feature (requires the `middlewest` backend) that runs the cache on each redirect hop, so redirected responses are cached under their own URL instead of the original request URL
+
+### Changed
+
+- `reqwest-middleware` is now an optional feature, still enabled by default; select the client backend with either the `reqwest-middleware` or `middlewest` feature
+- `async-trait` is now optional, required only by the `reqwest-middleware` backend
+
 ## [1.0.0-alpha.7] - 2026-07-22
 
 ### Added

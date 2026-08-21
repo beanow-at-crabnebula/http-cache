@@ -20,10 +20,14 @@
 //! It works as part of the [reqwest-middleware] ecosystem to provide caching capabilities.
 //!
 //! ```no_run
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest::Client;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest_middleware::ClientBuilder;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use http_cache_reqwest::{Cache, CacheMode, RedbManager, HttpCache, HttpCacheOptions};
 //!
+//! # #[cfg(feature = "reqwest-middleware")]
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //!     let client = ClientBuilder::new(Client::new())
@@ -50,6 +54,8 @@
 //!     
 //!     Ok(())
 //! }
+//! # #[cfg(not(feature = "reqwest-middleware"))]
+//! # fn main() {}
 //! ```
 //!
 //! ## Streaming Support
@@ -65,16 +71,16 @@
 //! (typically 35-40% reduction) compared to traditional buffered approaches.
 //!
 //! ```no_run
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use reqwest::Client;
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use reqwest_middleware::ClientBuilder;
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use http_cache_reqwest::{StreamingCache, CacheMode};
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use http_cache::StreamingManager;
 //!
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! #[tokio::main]
 //! async fn main() -> reqwest_middleware::Result<()> {
 //!     let streaming_manager = StreamingManager::with_temp_dir(1000).await.unwrap();
@@ -103,23 +109,23 @@
 //!     
 //!     Ok(())
 //! }
-//! # #[cfg(not(feature = "streaming"))]
+//! # #[cfg(not(all(feature = "streaming", feature = "reqwest-middleware")))]
 //! # fn main() {}
 //! ```
 //!
 //! ### Streaming Cache with Custom Options
 //!
 //! ```no_run
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use reqwest::Client;
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use reqwest_middleware::ClientBuilder;
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use http_cache_reqwest::{StreamingCache, CacheMode, HttpCacheOptions};
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! use http_cache::StreamingManager;
 //!
-//! # #[cfg(feature = "streaming")]
+//! # #[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
 //! #[tokio::main]
 //! async fn main() -> reqwest_middleware::Result<()> {
 //!     let options = HttpCacheOptions {
@@ -145,7 +151,7 @@
 //!         
 //!     Ok(())
 //! }
-//! # #[cfg(not(feature = "streaming"))]
+//! # #[cfg(not(all(feature = "streaming", feature = "reqwest-middleware")))]
 //! # fn main() {}
 //! ```
 //!
@@ -154,10 +160,14 @@
 //! Control caching behavior with different modes:
 //!
 //! ```no_run
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest::Client;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest_middleware::ClientBuilder;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use http_cache_reqwest::{Cache, CacheMode, RedbManager, HttpCache, HttpCacheOptions};
 //!
+//! # #[cfg(feature = "reqwest-middleware")]
 //! #[tokio::main]
 //! async fn main() -> reqwest_middleware::Result<()> {
 //!     let client = ClientBuilder::new(Client::new())
@@ -172,6 +182,8 @@
 //!     client.get("https://httpbin.org/uuid").send().await?;
 //!     Ok(())
 //! }
+//! # #[cfg(not(feature = "reqwest-middleware"))]
+//! # fn main() {}
 //! ```
 //!
 //! ## Per-Request Cache Control
@@ -179,10 +191,14 @@
 //! Override the cache mode on individual requests:
 //!
 //! ```no_run
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest::Client;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest_middleware::ClientBuilder;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use http_cache_reqwest::{Cache, CacheMode, RedbManager, HttpCache, HttpCacheOptions};
 //!
+//! # #[cfg(feature = "reqwest-middleware")]
 //! #[tokio::main]
 //! async fn main() -> reqwest_middleware::Result<()> {
 //!     let client = ClientBuilder::new(Client::new())
@@ -207,6 +223,8 @@
 //!         
 //!     Ok(())
 //! }
+//! # #[cfg(not(feature = "reqwest-middleware"))]
+//! # fn main() {}
 //! ```
 //!
 //! ## Custom Cache Keys
@@ -214,11 +232,16 @@
 //! Customize how cache keys are generated:
 //!
 //! ```no_run
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest::Client;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use reqwest_middleware::ClientBuilder;
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use http_cache_reqwest::{Cache, CacheMode, RedbManager, HttpCache, HttpCacheOptions};
+//! # #[cfg(feature = "reqwest-middleware")]
 //! use std::sync::Arc;
 //!
+//! # #[cfg(feature = "reqwest-middleware")]
 //! #[tokio::main]
 //! async fn main() -> reqwest_middleware::Result<()> {
 //!     let options = HttpCacheOptions {
@@ -239,6 +262,8 @@
 //!         
 //!     Ok(())
 //! }
+//! # #[cfg(not(feature = "reqwest-middleware"))]
+//! # fn main() {}
 //! ```
 //!
 //! ## In-Memory Caching
@@ -246,16 +271,16 @@
 //! Use the Moka in-memory cache:
 //!
 //! ```no_run
-//! # #[cfg(feature = "manager-moka")]
+//! # #[cfg(all(feature = "manager-moka", feature = "reqwest-middleware"))]
 //! use reqwest::Client;
-//! # #[cfg(feature = "manager-moka")]
+//! # #[cfg(all(feature = "manager-moka", feature = "reqwest-middleware"))]
 //! use reqwest_middleware::ClientBuilder;
-//! # #[cfg(feature = "manager-moka")]
+//! # #[cfg(all(feature = "manager-moka", feature = "reqwest-middleware"))]
 //! use http_cache_reqwest::{Cache, CacheMode, MokaManager, HttpCache, HttpCacheOptions};
-//! # #[cfg(feature = "manager-moka")]
+//! # #[cfg(all(feature = "manager-moka", feature = "reqwest-middleware"))]
 //! use http_cache_reqwest::MokaCache;
 //!
-//! # #[cfg(feature = "manager-moka")]
+//! # #[cfg(all(feature = "manager-moka", feature = "reqwest-middleware"))]
 //! #[tokio::main]
 //! async fn main() -> reqwest_middleware::Result<()> {
 //!     let client = ClientBuilder::new(Client::new())
@@ -268,7 +293,41 @@
 //!         
 //!     Ok(())
 //! }
-//! # #[cfg(not(feature = "manager-moka"))]
+//! # #[cfg(not(all(feature = "manager-moka", feature = "reqwest-middleware")))]
+//! # fn main() {}
+//! ```
+//!
+//! ## Redirect Caching
+//!
+//! The optional `middlewest` backend replaces the default `reqwest-middleware`,
+//! and with its `redirect` feature redirects are followed through the middleware
+//! chain, so each hop is cached under its own URL rather than the final response
+//! being cached under the original request URL:
+//!
+//! ```no_run
+//! # #[cfg(all(feature = "middlewest", feature = "redirect", feature = "manager-redb"))]
+//! use reqwest::Client;
+//! # #[cfg(all(feature = "middlewest", feature = "redirect", feature = "manager-redb"))]
+//! use middlewest::{ClientBuilder, redirect::RedirectPolicy};
+//! # #[cfg(all(feature = "middlewest", feature = "redirect", feature = "manager-redb"))]
+//! use http_cache_reqwest::{Cache, CacheMode, RedbManager, HttpCache, HttpCacheOptions};
+//!
+//! # #[cfg(all(feature = "middlewest", feature = "redirect", feature = "manager-redb"))]
+//! #[tokio::main]
+//! async fn main() -> middlewest::Result<()> {
+//!     let client = ClientBuilder::from_reqwest_builder(Client::builder())?
+//!         .with(Cache(HttpCache {
+//!             mode: CacheMode::Default,
+//!             manager: RedbManager::new("./http-cache.redb").unwrap(),
+//!             options: HttpCacheOptions::default(),
+//!         }))
+//!         .redirect(RedirectPolicy::limited(10))
+//!         .build();
+//!
+//!     client.get("https://httpbin.org/redirect/1").send().await?;
+//!     Ok(())
+//! }
+//! # #[cfg(not(all(feature = "middlewest", feature = "redirect", feature = "manager-redb")))]
 //! # fn main() {}
 //! ```
 // Re-export unified error types from http-cache core
@@ -294,7 +353,20 @@ use http_cache::{
 };
 use http_cache_semantics::CachePolicy;
 use reqwest::{Request, Response, ResponseBuilderExt};
-use reqwest_middleware::{Error, Next};
+#[cfg(all(feature = "reqwest-middleware", feature = "middlewest"))]
+compile_error!(
+    "features `reqwest-middleware` and `middlewest` are mutually exclusive"
+);
+#[cfg(not(any(feature = "reqwest-middleware", feature = "middlewest")))]
+compile_error!(
+    "either feature `reqwest-middleware` or `middlewest` must be enabled"
+);
+
+use client_middleware::{Error, Next};
+#[cfg(feature = "middlewest")]
+pub(crate) use middlewest as client_middleware;
+#[cfg(not(feature = "middlewest"))]
+pub(crate) use reqwest_middleware as client_middleware;
 
 /// Helper function to convert our error types to reqwest middleware errors
 fn to_middleware_error<E: std::error::Error + Send + Sync + 'static>(
@@ -566,9 +638,8 @@ fn from_box_error(e: BoxError) -> Error {
     to_middleware_error(HttpCacheError::Cache(e.to_string()))
 }
 
-#[async_trait::async_trait]
-impl<T: CacheManager> reqwest_middleware::Middleware for Cache<T> {
-    async fn handle(
+impl<T: CacheManager> Cache<T> {
+    async fn run(
         &self,
         req: Request,
         extensions: &mut Extensions,
@@ -613,17 +684,41 @@ impl<T: CacheManager> reqwest_middleware::Middleware for Cache<T> {
     }
 }
 
-#[cfg(feature = "streaming")]
+#[cfg(feature = "reqwest-middleware")]
 #[async_trait::async_trait]
-impl<T: StreamingCacheManager> reqwest_middleware::Middleware
-    for StreamingCache<T>
+impl<T: CacheManager> client_middleware::Middleware for Cache<T> {
+    async fn handle(
+        &self,
+        req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> std::result::Result<Response, Error> {
+        self.run(req, extensions, next).await
+    }
+}
+
+#[cfg(feature = "middlewest")]
+impl<T: CacheManager> client_middleware::Middleware for Cache<T> {
+    fn handle<'a>(
+        &'a self,
+        req: Request,
+        extensions: &'a mut Extensions,
+        next: Next<'a>,
+    ) -> client_middleware::BoxFuture<'a, std::result::Result<Response, Error>>
+    {
+        Box::pin(self.run(req, extensions, next))
+    }
+}
+
+#[cfg(feature = "streaming")]
+impl<T: StreamingCacheManager> StreamingCache<T>
 where
     T::Body: Send + 'static,
     <T::Body as http_body::Body>::Data: Send,
     <T::Body as http_body::Body>::Error:
         Into<http_cache::StreamingError> + Send + Sync + 'static,
 {
-    async fn handle(
+    async fn run(
         &self,
         req: Request,
         extensions: &mut Extensions,
@@ -713,6 +808,46 @@ where
             }
             Ok(res)
         }
+    }
+}
+
+#[cfg(all(feature = "streaming", feature = "reqwest-middleware"))]
+#[async_trait::async_trait]
+impl<T: StreamingCacheManager> client_middleware::Middleware
+    for StreamingCache<T>
+where
+    T::Body: Send + 'static,
+    <T::Body as http_body::Body>::Data: Send,
+    <T::Body as http_body::Body>::Error:
+        Into<http_cache::StreamingError> + Send + Sync + 'static,
+{
+    async fn handle(
+        &self,
+        req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> std::result::Result<Response, Error> {
+        self.run(req, extensions, next).await
+    }
+}
+
+#[cfg(all(feature = "streaming", feature = "middlewest"))]
+impl<T: StreamingCacheManager> client_middleware::Middleware
+    for StreamingCache<T>
+where
+    T::Body: Send + 'static,
+    <T::Body as http_body::Body>::Data: Send,
+    <T::Body as http_body::Body>::Error:
+        Into<http_cache::StreamingError> + Send + Sync + 'static,
+{
+    fn handle<'a>(
+        &'a self,
+        req: Request,
+        extensions: &'a mut Extensions,
+        next: Next<'a>,
+    ) -> client_middleware::BoxFuture<'a, std::result::Result<Response, Error>>
+    {
+        Box::pin(self.run(req, extensions, next))
     }
 }
 

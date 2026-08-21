@@ -1,9 +1,9 @@
 use crate::{BadRequest, Cache, HttpCacheError};
 use std::sync::Arc;
 
+use crate::client_middleware::ClientBuilder;
 use http_cache::*;
 use reqwest::Client;
-use reqwest_middleware::ClientBuilder;
 #[cfg(any(feature = "streaming", feature = "rate-limiting"))]
 use wiremock::matchers::path;
 use wiremock::{
@@ -793,6 +793,65 @@ async fn revalidation_500() -> Result<()> {
     let res = client.get(url).send().await?;
     assert!(res.headers().get("warning").is_some());
     assert_eq!(res.bytes().await?, TEST_BODY);
+    Ok(())
+}
+
+/// http-cache#117: with middlewest's `redirect` feature the cache runs on each
+/// hop, so the uncacheable 307 is not stored and the target is keyed on its URL.
+#[cfg(all(feature = "middlewest", feature = "redirect"))]
+#[tokio::test]
+async fn redirects_are_cached_per_hop() -> Result<()> {
+    use crate::client_middleware::redirect::RedirectPolicy;
+    use wiremock::matchers::path;
+
+    let mock_server = MockServer::start().await;
+    Mock::given(path("/"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("cache-control", "no-store")
+                .insert_header("location", "/final"),
+        )
+        .mount(&mock_server)
+        .await;
+    Mock::given(path("/final"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("cache-control", CACHEABLE_PUBLIC)
+                .set_body_bytes(TEST_BODY),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let manager = create_cache_manager();
+    let client = ClientBuilder::from_reqwest_builder(Client::builder())?
+        .with(Cache(HttpCache {
+            mode: CacheMode::Default,
+            manager: manager.clone(),
+            options: Default::default(),
+        }))
+        .redirect(RedirectPolicy::limited(10))
+        .build();
+
+    let root = format!("{}/", mock_server.uri());
+    let target = format!("{}/final", mock_server.uri());
+    let res = client.get(root.clone()).send().await?;
+    assert_eq!(res.bytes().await?, TEST_BODY);
+
+    assert!(
+        CacheManager::get(&manager, &format!("{}:{}", GET, url_parse(&root)?))
+            .await?
+            .is_none(),
+        "uncacheable 307 must not be cached under the original URL"
+    );
+    assert!(
+        CacheManager::get(
+            &manager,
+            &format!("{}:{}", GET, url_parse(&target)?)
+        )
+        .await?
+        .is_some(),
+        "cacheable redirect target must be cached under its own URL"
+    );
     Ok(())
 }
 

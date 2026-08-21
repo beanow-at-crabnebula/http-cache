@@ -49,7 +49,7 @@ url = { version = "2.5.4", features = ["serde"] }
 [dev-dependencies.http-cache-reqwest]
 path = "../http-cache-reqwest"
 default-features = false
-features = ["manager-cacache"]
+features = ["reqwest-middleware", "manager-cacache"]
 
 [features]
 default = ["url-standard"]

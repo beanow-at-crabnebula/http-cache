@@ -1,6 +1,6 @@
 [package]
 name = "http-cache-reqwest"
-version = "1.0.0-alpha.7"
+version = "1.0.0-alpha.8"
 description = "http-cache middleware implementation for reqwest"
 authors = [
     "Christian Haynes <06chaynes@gmail.com>",
@@ -17,7 +17,7 @@ rust-version = "1.89.0"
 
 [dependencies]
 anyhow = "1.0.95"
-async-trait = "0.1.85"
+async-trait = { version = "0.1.85", optional = true }
 bytes = "1.8.0"
 http = "1.2.0"
 http-body = "1.0.1"
@@ -26,7 +26,8 @@ http-cache-semantics = "3.0.0"
 reqwest = { version = "0.13.1", default-features = false, features = [
     "stream",
 ] }
-reqwest-middleware = "0.5.0"
+reqwest-middleware = { version = "0.5.0", optional = true }
+middlewest = { version = "0.1", optional = true }
 url = { version = "2.5.4", features = ["serde"] }
 
 # Optional dependencies for streaming feature
@@ -63,18 +64,21 @@ libc = "0.2"
 
 [[example]]
 name = "reqwest_streaming_memory_profile"
-required-features = ["streaming", "manager-cacache"]
+required-features = ["streaming", "manager-cacache", "reqwest-middleware"]
 
 [[example]]
 name = "reqwest_basic"
-required-features = ["manager-cacache"]
+required-features = ["manager-cacache", "reqwest-middleware"]
 
 [[example]]
 name = "reqwest_streaming"
-required-features = ["streaming"]
+required-features = ["streaming", "reqwest-middleware"]
 
 [features]
-default = ["manager-redb", "url-standard"]
+default = ["manager-redb", "url-standard", "reqwest-middleware"]
+reqwest-middleware = ["dep:reqwest-middleware", "dep:async-trait"]
+middlewest = ["dep:middlewest"]
+redirect = ["middlewest?/redirect"]
 manager-cacache = ["http-cache/manager-cacache"]
 manager-moka = ["http-cache/manager-moka"]
 manager-foyer = ["http-cache/manager-foyer"]
@@ -88,5 +92,18 @@ manager-cacache-bincode = ["http-cache/manager-cacache-bincode"]
 manager-moka-bincode = ["http-cache/manager-moka-bincode"]
 
 [package.metadata.docs.rs]
-all-features = true
+# The two client backends (reqwest-middleware, middlewest) are mutually exclusive,
+# so docs are built on the default reqwest-middleware backend rather than all-features.
+no-default-features = true
+features = [
+    "reqwest-middleware",
+    "streaming",
+    "rate-limiting",
+    "http-headers-compat",
+    "manager-cacache",
+    "manager-moka",
+    "manager-foyer",
+    "manager-redb",
+    "url-standard",
+]
 rustdoc-args = ["--cfg", "docsrs"]

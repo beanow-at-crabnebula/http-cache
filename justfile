@@ -17,9 +17,11 @@
     echo "\n----------\nCore library (manager-redb only, tokio-free):\n"
     cd http-cache && cargo nextest run --no-default-features --features manager-redb,url-standard
     echo "\n----------\nReqwest middleware:\n"
-    cd http-cache-reqwest && cargo nextest run --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard
+    cd http-cache-reqwest && cargo nextest run --no-default-features --features reqwest-middleware,manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard
     echo "\n----------\nReqwest middleware (with url-ada):\n"
-    cd http-cache-reqwest && cargo nextest run --no-default-features --features manager-cacache,url-ada
+    cd http-cache-reqwest && cargo nextest run --no-default-features --features reqwest-middleware,manager-cacache,url-ada
+    echo "\n----------\nMiddlewest backend:\n"
+    cd http-cache-reqwest && cargo nextest run --lib --no-default-features --features middlewest,redirect,manager-cacache,streaming,rate-limiting,url-standard
     echo "\n----------\nSurf middleware:\n"
     cd http-cache-surf && cargo nextest run --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,rate-limiting,http-headers-compat,url-standard
     echo "\n----------\nUreq middleware:\n"
@@ -45,8 +47,8 @@
     echo "\n----------\nCore library (with foyer):\n"
     cd http-cache && cargo test --doc --no-default-features --features manager-foyer,with-http-types,streaming,http-headers-compat,url-standard
     echo "\n----------\nReqwest middleware:\n"
-    cd http-cache-reqwest && cargo test --doc --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard
-    cd http-cache-reqwest && cargo test --doc --no-default-features --features manager-redb,url-standard
+    cd http-cache-reqwest && cargo test --doc --no-default-features --features reqwest-middleware,manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard
+    cd http-cache-reqwest && cargo test --doc --no-default-features --features reqwest-middleware,manager-redb,url-standard
     echo "\n----------\nSurf middleware:\n"
     cd http-cache-surf && cargo test --doc --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,rate-limiting,http-headers-compat,url-standard
     cd http-cache-surf && cargo test --doc --no-default-features --features manager-redb,url-standard
@@ -75,9 +77,11 @@
     echo "\n----------\nCore library (manager-redb only, tokio-free):\n"
     cd http-cache && cargo check --no-default-features --features manager-redb,url-standard
     echo "\n----------\nReqwest middleware:\n"
-    cd http-cache-reqwest && cargo check --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard
+    cd http-cache-reqwest && cargo check --no-default-features --features reqwest-middleware,manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard
     echo "\n----------\nReqwest middleware (with url-ada):\n"
-    cd http-cache-reqwest && cargo check --no-default-features --features manager-cacache,url-ada
+    cd http-cache-reqwest && cargo check --no-default-features --features reqwest-middleware,manager-cacache,url-ada
+    echo "\n----------\nMiddlewest backend:\n"
+    cd http-cache-reqwest && cargo check --no-default-features --features middlewest,redirect,manager-cacache,streaming,rate-limiting,url-standard
     echo "\n----------\nSurf middleware:\n"
     cd http-cache-surf && cargo check --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,rate-limiting,http-headers-compat,url-standard
     echo "\n----------\nUreq middleware:\n"
@@ -157,9 +161,11 @@ changelog TAG:
     echo "\n----------\nCore library (manager-redb only, tokio-free):\n"
     cd http-cache && cargo clippy --lib --tests --all-targets --no-default-features --features manager-redb,url-standard -- -D warnings
     echo "\n----------\nReqwest middleware:\n"
-    cd http-cache-reqwest && cargo clippy --lib --tests --all-targets --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard -- -D warnings
+    cd http-cache-reqwest && cargo clippy --lib --tests --all-targets --no-default-features --features reqwest-middleware,manager-cacache,manager-moka,manager-foyer,manager-redb,streaming,rate-limiting,http-headers-compat,url-standard -- -D warnings
     echo "\n----------\nReqwest middleware (with url-ada):\n"
-    cd http-cache-reqwest && cargo clippy --lib --tests --all-targets --no-default-features --features manager-cacache,url-ada -- -D warnings
+    cd http-cache-reqwest && cargo clippy --lib --tests --all-targets --no-default-features --features reqwest-middleware,manager-cacache,url-ada -- -D warnings
+    echo "\n----------\nMiddlewest backend:\n"
+    cd http-cache-reqwest && cargo clippy --lib --tests --no-default-features --features middlewest,redirect,manager-cacache,streaming,rate-limiting,url-standard -- -D warnings
     echo "\n----------\nSurf middleware:\n"
     cd http-cache-surf && cargo clippy --lib --tests --all-targets --no-default-features --features manager-cacache,manager-moka,manager-foyer,manager-redb,rate-limiting,http-headers-compat,url-standard -- -D warnings
     echo "\n----------\nSurf middleware (with url-ada):\n"
