@@ -1,5 +1,8 @@
 use crate::{BadRequest, Cache, HttpCacheError};
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use crate::client_middleware::ClientBuilder;
 use http_cache::*;
@@ -127,6 +130,55 @@ async fn default_mode_with_options() -> Result<()> {
         CacheManager::get(&manager, &format!("{}:{}", GET, url_parse(&url)?))
             .await?;
     assert!(data.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn max_ttl_applies_to_buffered_responses() -> Result<()> {
+    let mock_server = MockServer::start().await;
+    let m = build_mock(CACHEABLE_PUBLIC, TEST_BODY, 200, 2);
+    let _mock_guard = mock_server.register_as_scoped(m).await;
+    let url = format!("{}/", mock_server.uri());
+    let manager = create_cache_manager();
+
+    let client = ClientBuilder::new(Client::new())
+        .with(Cache(HttpCache {
+            mode: CacheMode::Default,
+            manager: manager.clone(),
+            options: HttpCacheOptions {
+                max_ttl: Some(Duration::ZERO),
+                ..Default::default()
+            },
+        }))
+        .build();
+
+    // A zero maximum TTL still permits storage, but makes the stored policy
+    // immediately stale.
+    let response = client.get(&url).send().await?;
+    assert_eq!(response.bytes().await?, TEST_BODY);
+    let cached =
+        CacheManager::get(&manager, &format!("{}:{}", GET, url_parse(&url)?))
+            .await?;
+    let (cached_response, policy) = cached.expect("response should be stored");
+    assert_eq!(
+        cached_response.headers.get("cache-control").map(String::as_str),
+        Some(CACHEABLE_PUBLIC)
+    );
+    assert_eq!(policy.time_to_live(SystemTime::now()), Duration::ZERO);
+    assert!(policy.is_stale(SystemTime::now()));
+
+    // The next request must reach upstream because the initial policy is stale.
+    let response = client.get(&url).send().await?;
+    assert_eq!(response.bytes().await?, TEST_BODY);
+
+    // The replacement 200 response must also be stored with the capped policy.
+    let cached =
+        CacheManager::get(&manager, &format!("{}:{}", GET, url_parse(&url)?))
+            .await?;
+    let (_, policy) = cached.expect("replacement response should be stored");
+    assert_eq!(policy.time_to_live(SystemTime::now()), Duration::ZERO);
+    assert!(policy.is_stale(SystemTime::now()));
+
     Ok(())
 }
 
