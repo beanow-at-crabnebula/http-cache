@@ -808,7 +808,10 @@ mod interface_tests {
         HttpCacheOptions,
     };
     use http::{Request, Response, StatusCode};
-    use std::sync::Arc;
+    use std::{
+        sync::Arc,
+        time::{Duration, SystemTime},
+    };
 
     #[tokio::test]
     async fn test_http_cache_interface_analyze_request() {
@@ -901,6 +904,53 @@ mod interface_tests {
         assert_eq!(cached_response.metadata, Some(b"Metadata".to_vec()));
 
         // Temporary directory will be automatically cleaned up when dropped
+    }
+
+    #[tokio::test]
+    async fn test_http_cache_interface_max_ttl() {
+        let cache_dir = tempfile::tempdir().unwrap();
+        let manager = CACacheManager::new(cache_dir.path().to_path_buf(), true);
+        let cache = HttpCache {
+            mode: CacheMode::Default,
+            manager,
+            options: HttpCacheOptions {
+                max_ttl: Some(Duration::ZERO),
+                ..HttpCacheOptions::default()
+            },
+        };
+
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header("cache-control", "max-age=3600")
+            .body(b"Hello, world!".to_vec())
+            .unwrap();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("https://example.com/test")
+            .body(())
+            .unwrap();
+        let (parts, _) = req.into_parts();
+        let analysis = cache.analyze_request(&parts, None).unwrap();
+
+        let processed = cache
+            .process_response(analysis.clone(), response, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            processed.headers().get("cache-control").unwrap(),
+            "max-age=3600"
+        );
+
+        let cached =
+            cache.lookup_cached_response(&analysis.cache_key).await.unwrap();
+        let (cached_response, policy) = cached.unwrap();
+        assert_eq!(
+            cached_response.headers.get("cache-control").map(String::as_str),
+            Some("max-age=3600")
+        );
+        assert_eq!(policy.time_to_live(SystemTime::now()), Duration::ZERO);
+        assert!(policy.is_stale(SystemTime::now()));
     }
 
     #[tokio::test]
