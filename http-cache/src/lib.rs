@@ -2938,13 +2938,10 @@ impl<T: CacheManager> HttpCache<T> {
             res.cache_status(HitOrMiss::MISS);
             res.cache_lookup_status(HitOrMiss::MISS);
         }
-        let policy = match self.options.cache_options {
-            Some(options) => middleware.policy_with_options(&res, options)?,
-            None => middleware.policy(&res)?,
-        };
+        let parts = middleware.parts()?;
+        let policy = self.options.create_cache_policy(&parts, &res.parts()?);
         let is_get_head = middleware.is_method_get_head();
         let mut mode = self.cache_mode(middleware)?;
-        let parts = middleware.parts()?;
 
         // Allow response-based cache mode override
         if let Some(response_cache_mode_fn) =
@@ -3063,17 +3060,15 @@ impl<T: CacheManager> HttpCache<T> {
                         .await?;
                     Ok(res)
                 } else if cond_res.status == 200 {
-                    let policy = match self.options.cache_options {
-                        Some(options) => middleware
-                            .policy_with_options(&cond_res, options)?,
-                        None => middleware.policy(&cond_res)?,
-                    };
+                    let response_parts = cond_res.parts()?;
+                    let policy = self
+                        .options
+                        .create_cache_policy(&parts, &response_parts);
                     if self.options.cache_status_headers {
                         cond_res.cache_status(HitOrMiss::MISS);
                         cond_res.cache_lookup_status(HitOrMiss::HIT);
                     }
                     // Generate metadata using the provider callback if configured
-                    let response_parts = cond_res.parts()?;
                     cond_res.metadata =
                         self.options.generate_metadata(&parts, &response_parts);
 
