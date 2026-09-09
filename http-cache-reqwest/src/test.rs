@@ -2823,7 +2823,7 @@ mod streaming_issue_164 {
             .build();
 
         let res = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            Duration::from_secs(10),
             client.get(format!("http://{addr}/")).send(),
         )
         .await
@@ -2838,7 +2838,7 @@ mod streaming_issue_164 {
         let mut first = Vec::new();
         while first.len() < first_chunk_len {
             let chunk = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
+                Duration::from_secs(10),
                 stream.next(),
             )
             .await
