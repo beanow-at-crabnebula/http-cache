@@ -398,7 +398,7 @@ cargo run --example axum_basic --features manager-cacache
 
 ## Minimum Supported Rust Version (MSRV)
 
-1.89.0
+1.90.0
 
 ## Contributing
 

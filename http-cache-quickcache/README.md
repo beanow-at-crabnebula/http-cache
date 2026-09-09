@@ -12,7 +12,7 @@ An http-cache manager implementation for [quick-cache](https://github.com/arthur
 
 ## Minimum Supported Rust Version (MSRV)
 
-1.89.0
+1.90.0
 
 ## Install
 
