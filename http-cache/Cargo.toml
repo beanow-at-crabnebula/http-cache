@@ -20,9 +20,7 @@ bincode = { version = "1.3.3", optional = true }
 bytes = "1.8.0"
 cacache = { version = "13.1.0", default-features = false, features = ["tokio-runtime", "mmap"], optional = true }
 foyer = { version = "0.22.3", optional = true }
-futures = "0.3.31"
 futures-util = { version = "0.3.31", optional = true }
-hex = "0.4.3"
 log = "0.4.22"
 http = "1.2.0"
 http-body = "1.0.1"
@@ -34,18 +32,13 @@ moka = { version = "0.12.10", features = ["future"], optional = true }
 pin-project-lite = "0.2"
 postcard = { version = "1.1", default-features = false, features = ["alloc"], optional = true }
 serde = { version = "1.0.217", features = ["derive"] }
-serde_json = { version = "1.0", optional = true }
 blake3 = { version = "1.5.0", optional = true }
-dashmap = { version = "6.1.0", optional = true }
 smol = { version = "2.0.2", optional = true }
 tokio = { version = "1.44.0", features = ["fs", "io-util", "sync", "rt"], optional = true }
 url = { version = "2.5.4", features = ["serde"], optional = true }
 ada-url = { version = "4", features = ["serde"], optional = true }
-cfg-if = { version = "1.0", optional = true }
 governor = { version = "0.10.1", optional = true }
 tempfile = { version = "3.13.0", optional = true }
-async-lock = { version = "3.4.0", optional = true }
-async-compat = { version = "0.2", optional = true }
 rand = { version = "0.10.0", optional = true }
 redb = { version = "4.0.0", optional = true }
 
@@ -55,8 +48,6 @@ smol = "2.0.2"
 http-cache-semantics = "3.0.0"
 tokio = { version = "1.43.0", features = [ "macros", "rt", "rt-multi-thread", "time" ] }
 tempfile = "3.13.0"
-macro_rules_attribute = "0.2.0"
-smol-macros = "0.1.1"
 
 [features]
 default = ["manager-redb", "url-standard"]
@@ -74,7 +65,6 @@ streaming = [
     "postcard",
     "tokio",
     "futures-util",
-    "cfg-if",
     "rand",
     "dep:http-body-util",
 ]

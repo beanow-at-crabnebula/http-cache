@@ -6,16 +6,13 @@ The ecosystem supports both traditional caching (where entire response bodies ar
 
 ## The `Middleware` trait
 
-The [`Middleware`](https://docs.rs/http-cache/latest/http_cache/trait.Middleware.html) trait is the main trait that needs to be implemented to add support for a new HTTP client. It has nine methods that it requires:
+The [`Middleware`](https://docs.rs/http-cache/latest/http_cache/trait.Middleware.html) trait is the main trait that needs to be implemented to add support for a new HTTP client. It has six methods that it requires:
 
 - `is_method_get_head`: returns `true` if the method of the request is `GET` or `HEAD`, `false` otherwise
-- `policy`: returns a [`CachePolicy`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CachePolicy.html) with default options for the given `HttpResponse`
-- `policy_with_options`: returns a [`CachePolicy`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CachePolicy.html) with the provided [`CacheOptions`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CacheOptions.html) for the given `HttpResponse`
 - `update_headers`: updates the request headers with the provided [`http::request::Parts`](https://docs.rs/http/latest/http/request/struct.Parts.html)
 - `force_no_cache`: overrides the `Cache-Control` header to 'no-cache' directive
 - `parts`: returns the [`http::request::Parts`](https://docs.rs/http/latest/http/request/struct.Parts.html) from the request
 - `url`: returns the requested [`Url`](https://docs.rs/url/latest/url/struct.Url.html)
-- `method`: returns the method of the request as a `String`
 - `remote_fetch`: performs the request and returns the `HttpResponse`
 
 The `remote_fetch` method is asynchronous and uses native Rust async functions in traits (AFIT), stabilized in Rust 1.75.
@@ -23,12 +20,6 @@ The `remote_fetch` method is asynchronous and uses native Rust async functions i
 ### The `is_method_get_head` method
 
 The `is_method_get_head` method is used to determine if the method of the request is `GET` or `HEAD`. It returns a `bool` where `true` indicates the method is `GET` or `HEAD`, and `false` if otherwise.
-
-### The `policy` and `policy_with_options` methods
-
-The `policy` method is used to generate the cache policy for the given `HttpResponse`. It returns a [`CachePolicy`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CachePolicy.html) with default options.
-
-The `policy_with_options` method is used to generate the cache policy for the given `HttpResponse` with the provided [`CacheOptions`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CacheOptions.html). It returns a [`CachePolicy`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CachePolicy.html).
 
 ### The `update_headers` method
 
@@ -45,10 +36,6 @@ The `parts` method is used to return the [`http::request::Parts`](https://docs.r
 ### The `url` method
 
 The `url` method is used to return the requested [`Url`](https://docs.rs/url/latest/url/struct.Url.html) in a standard format.
-
-### The `method` method
-
-The `method` method is used to return the HTTP method of the request as a `String` to standardize the format.
 
 ### The `remote_fetch` method
 
@@ -91,31 +78,6 @@ The `is_method_get_head` will check the request stored in our `SurfMiddleware` s
 ```rust
 fn is_method_get_head(&self) -> bool {
     self.req.method() == Method::Get || self.req.method() == Method::Head
-}
-```
-
-Next we'll implement the `policy` method. This method accepts a reference to the `HttpResponse` and returns a [`CachePolicy`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CachePolicy.html) with default options. We'll use the [`http_cache_semantics::CachePolicy::new`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CachePolicy.html#method.new) method to generate the policy.
-
-```rust
-fn policy(&self, response: &HttpResponse) -> Result<CachePolicy> {
-    Ok(CachePolicy::new(&self.parts()?, &response.parts()?))
-}
-```
-
-The `policy_with_options` method is similar to the `policy` method, but accepts a [`CacheOptions`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CacheOptions.html) struct to override the default options. We'll use the [`http_cache_semantics::CachePolicy::new_options`](https://docs.rs/http-cache-semantics/latest/http_cache_semantics/struct.CachePolicy.html#method.new_options) method to generate the policy.
-
-```rust
-fn policy_with_options(
-    &self,
-    response: &HttpResponse,
-    options: CacheOptions,
-) -> Result<CachePolicy> {
-    Ok(CachePolicy::new_options(
-        &self.parts()?,
-        &response.parts()?,
-        SystemTime::now(),
-        options,
-    ))
 }
 ```
 
@@ -169,14 +131,6 @@ The `url` method is used to return the requested [`Url`](https://docs.rs/url/lat
 ```rust
 fn url(&self) -> Result<Url> {
     Ok(self.req.url().clone())
-}
-```
-
-The `method` method is used to return the HTTP method of the request as a `String` to standardize the format.
-
-```rust
-fn method(&self) -> Result<String> {
-    Ok(self.req.method().as_ref().to_string())
 }
 ```
 

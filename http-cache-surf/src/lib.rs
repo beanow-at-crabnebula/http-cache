@@ -145,18 +145,16 @@
 
 use std::convert::TryInto;
 use std::str::FromStr;
-use std::time::SystemTime;
 
 use http::{
     header::CACHE_CONTROL,
     request::{self, Parts},
 };
 use http_cache::{
-    url_parse, BadHeader, BoxError, CacheManager, CacheOptions, HitOrMiss,
-    HttpResponse, Middleware, Result, Url, XCACHE, XCACHELOOKUP,
+    url_parse, BadHeader, BoxError, CacheManager, HitOrMiss, HttpResponse,
+    Middleware, Result, Url, XCACHE, XCACHELOOKUP,
 };
 pub use http_cache::{CacheMode, HttpCache, HttpHeaders};
-use http_cache_semantics::CachePolicy;
 use http_types::{
     headers::HeaderValue as HttpTypesHeaderValue,
     Response as HttpTypesResponse, StatusCode as HttpTypesStatusCode,
@@ -205,21 +203,6 @@ impl Middleware for SurfMiddleware<'_> {
         self.req.method() == HttpTypesMethod::Get
             || self.req.method() == HttpTypesMethod::Head
     }
-    fn policy(&self, response: &HttpResponse) -> Result<CachePolicy> {
-        Ok(CachePolicy::new(&self.parts()?, &response.parts()?))
-    }
-    fn policy_with_options(
-        &self,
-        response: &HttpResponse,
-        options: CacheOptions,
-    ) -> Result<CachePolicy> {
-        Ok(CachePolicy::new_options(
-            &self.parts()?,
-            &response.parts()?,
-            SystemTime::now(),
-            options,
-        ))
-    }
     fn update_headers(&mut self, parts: &Parts) -> Result<()> {
         for header in parts.headers.iter() {
             let value = match HttpTypesHeaderValue::from_str(header.1.to_str()?)
@@ -253,9 +236,6 @@ impl Middleware for SurfMiddleware<'_> {
     }
     fn url(&self) -> Result<Url> {
         url_parse(self.req.url().as_str())
-    }
-    fn method(&self) -> Result<String> {
-        Ok(self.req.method().as_ref().to_string())
     }
     async fn remote_fetch(&mut self) -> Result<HttpResponse> {
         let url = url_parse(self.req.url().as_str())?;

@@ -1125,14 +1125,6 @@ pub trait Middleware: Send {
     }
     /// Determines if the request method is either GET or HEAD
     fn is_method_get_head(&self) -> bool;
-    /// Returns a new cache policy with default options
-    fn policy(&self, response: &HttpResponse) -> Result<CachePolicy>;
-    /// Returns a new cache policy with custom options
-    fn policy_with_options(
-        &self,
-        response: &HttpResponse,
-        options: CacheOptions,
-    ) -> Result<CachePolicy>;
     /// Attempts to update the request headers with the passed `http::request::Parts`
     fn update_headers(&mut self, parts: &request::Parts) -> Result<()>;
     /// Attempts to force the "no-cache" directive on the request
@@ -1141,8 +1133,6 @@ pub trait Middleware: Send {
     fn parts(&self) -> Result<request::Parts>;
     /// Attempts to determine the requested url
     fn url(&self) -> Result<Url>;
-    /// Attempts to determine the request method
-    fn method(&self) -> Result<String>;
     /// Attempts to fetch an upstream resource and return an [`HttpResponse`]
     fn remote_fetch(
         &mut self,

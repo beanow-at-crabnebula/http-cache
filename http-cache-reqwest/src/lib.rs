@@ -340,7 +340,7 @@ pub type ReqwestStreamingError = http_cache::ClientStreamingError;
 #[cfg(feature = "streaming")]
 use http_cache::StreamingCacheManager;
 
-use std::{str::FromStr, time::SystemTime};
+use std::str::FromStr;
 
 pub use http::request::Parts;
 use http::{
@@ -351,7 +351,6 @@ use http_cache::{
     url_parse, BoxError, HitOrMiss, Middleware, Result, Url, XCACHE,
     XCACHELOOKUP,
 };
-use http_cache_semantics::CachePolicy;
 use reqwest::{Request, Response, ResponseBuilderExt};
 #[cfg(all(feature = "reqwest-middleware", feature = "middlewest"))]
 compile_error!(
@@ -461,21 +460,6 @@ impl Middleware for ReqwestMiddleware<'_> {
     fn is_method_get_head(&self) -> bool {
         self.req.method() == Method::GET || self.req.method() == Method::HEAD
     }
-    fn policy(&self, response: &HttpResponse) -> Result<CachePolicy> {
-        Ok(CachePolicy::new(&self.parts()?, &response.parts()?))
-    }
-    fn policy_with_options(
-        &self,
-        response: &HttpResponse,
-        options: CacheOptions,
-    ) -> Result<CachePolicy> {
-        Ok(CachePolicy::new_options(
-            &self.parts()?,
-            &response.parts()?,
-            SystemTime::now(),
-            options,
-        ))
-    }
     fn update_headers(&mut self, parts: &Parts) -> Result<()> {
         for header in parts.headers.iter() {
             self.req.headers_mut().insert(header.0.clone(), header.1.clone());
@@ -512,9 +496,6 @@ impl Middleware for ReqwestMiddleware<'_> {
     fn url(&self) -> Result<Url> {
         // Re-parse the URL through our helper for url/ada-url compatibility
         url_parse(self.req.url().as_str())
-    }
-    fn method(&self) -> Result<String> {
-        Ok(self.req.method().as_ref().to_string())
     }
     async fn remote_fetch(&mut self) -> Result<HttpResponse> {
         let copied_req = clone_req(&self.req)?;

@@ -167,18 +167,15 @@ pub use http_cache::rate_limiting::{
 #[cfg(feature = "streaming")]
 use http_cache::StreamingError;
 use http_cache::{
-    url_parse, BoxError, CacheManager, CacheMode, CacheOptions, HitOrMiss,
-    HttpCache, HttpCacheOptions, HttpResponse, Middleware, Url, XCACHE,
-    XCACHELOOKUP,
+    url_parse, BoxError, CacheManager, CacheMode, HitOrMiss, HttpCache,
+    HttpCacheOptions, HttpResponse, Middleware, Url, XCACHE, XCACHELOOKUP,
 };
 #[cfg(feature = "streaming")]
 use http_cache::{HttpStreamingCache, StreamingCacheManager};
-use http_cache_semantics::CachePolicy;
 use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::SystemTime,
 };
 use tower::{Layer, Service, ServiceExt};
 
@@ -248,26 +245,6 @@ where
         self.parts.method == Method::GET || self.parts.method == Method::HEAD
     }
 
-    fn policy(
-        &self,
-        response: &HttpResponse,
-    ) -> http_cache::Result<CachePolicy> {
-        Ok(CachePolicy::new(&self.parts, &response.parts()?))
-    }
-
-    fn policy_with_options(
-        &self,
-        response: &HttpResponse,
-        options: CacheOptions,
-    ) -> http_cache::Result<CachePolicy> {
-        Ok(CachePolicy::new_options(
-            &self.parts,
-            &response.parts()?,
-            SystemTime::now(),
-            options,
-        ))
-    }
-
     fn update_headers(
         &mut self,
         parts: &request::Parts,
@@ -291,10 +268,6 @@ where
 
     fn url(&self) -> http_cache::Result<Url> {
         url_parse(self.parts.uri.to_string().as_str())
-    }
-
-    fn method(&self) -> http_cache::Result<String> {
-        Ok(self.parts.method.as_ref().to_string())
     }
 
     async fn remote_fetch(&mut self) -> http_cache::Result<HttpResponse> {

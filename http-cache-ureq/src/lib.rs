@@ -203,17 +203,14 @@
 // Re-export unified error types from http-cache core
 pub use http_cache::{BadRequest, HttpCacheError};
 
-use std::{
-    collections::HashMap, result::Result, str::FromStr, time::SystemTime,
-};
+use std::{collections::HashMap, result::Result, str::FromStr};
 
 pub use http::request::Parts;
 use http::{header::CACHE_CONTROL, Method};
 use http_cache::{
-    url_parse, BoxError, CacheManager, CacheOptions, HitOrMiss, HttpResponse,
-    Middleware, Url, XCACHE, XCACHELOOKUP,
+    url_parse, BoxError, CacheManager, HitOrMiss, HttpResponse, Middleware,
+    Url, XCACHE, XCACHELOOKUP,
 };
-use http_cache_semantics::CachePolicy;
 
 pub use http_cache::{
     CacheMode, HttpCache, HttpCacheOptions, ResponseCacheModeFn,
@@ -814,28 +811,6 @@ impl Middleware for UreqMiddleware<'_> {
         is_cacheable_method(&self.method)
     }
 
-    fn policy(
-        &self,
-        response: &HttpResponse,
-    ) -> http_cache::Result<CachePolicy> {
-        let parts = self.build_http_parts()?;
-        Ok(CachePolicy::new(&parts, &response.parts()?))
-    }
-
-    fn policy_with_options(
-        &self,
-        response: &HttpResponse,
-        options: CacheOptions,
-    ) -> http_cache::Result<CachePolicy> {
-        let parts = self.build_http_parts()?;
-        Ok(CachePolicy::new_options(
-            &parts,
-            &response.parts()?,
-            SystemTime::now(),
-            options,
-        ))
-    }
-
     fn update_headers(&mut self, parts: &Parts) -> http_cache::Result<()> {
         for (name, value) in parts.headers.iter() {
             let value_str = value.to_str().map_err(|e| {
@@ -860,10 +835,6 @@ impl Middleware for UreqMiddleware<'_> {
 
     fn url(&self) -> http_cache::Result<Url> {
         url_parse(&self.url)
-    }
-
-    fn method(&self) -> http_cache::Result<String> {
-        Ok(self.method.clone())
     }
 
     async fn remote_fetch(&mut self) -> http_cache::Result<HttpResponse> {
