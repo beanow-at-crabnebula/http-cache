@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5] - 2026-09-08
+
+### Changed
+
+- MSRV bumped from 1.89.0 to 1.90.0
+- Updated `http-cache` dependency to 1.0.0-alpha.8
+
 ## [0.2.4] - 2026-07-22
 
 ### Added

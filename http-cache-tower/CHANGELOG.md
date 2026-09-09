@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.0-alpha.8] - 2026-09-08
+
+### Changed
+
+- MSRV bumped from 1.89.0 to 1.90.0
+- Updated `http-cache` dependency to 1.0.0-alpha.8
+
+### Fixed
+
+- `tokio` dev-dependency now enables the `time` feature required by the `hyper_streaming` example (previously satisfied only transitively through other features)
+
+### Removed
+
+- Direct dependencies on `http-cache-semantics` and `url`, no longer used. The `rate-limiting` feature no longer enables `url`
+
 ## [1.0.0-alpha.7] - 2026-07-22
 
 ### Added

@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.0-alpha.8] - 2026-09-08
+
+### Changed
+
+- MSRV bumped from 1.89.0 to 1.90.0
+- `url-ada` now requires `ada-url` 4. `ada-url` sets `links`, so a dependency graph cannot contain both majors
+- A revalidated response now records the pre-revalidation request headers in its cache policy, matching the non-conditional and streaming paths. Previously it recorded the conditional request's headers, which could cause spurious `Vary` mismatches
+
+### Fixed
+
+- `max_ttl` is now applied on the buffered path, not only the streaming one. A response carrying no explicit freshness is served fresh for `max_ttl` rather than expiring immediately
+
+### Removed
+
+- `Middleware::policy`, `Middleware::policy_with_options` and `Middleware::method`. None had callers once policy construction moved to `HttpCacheOptions::create_cache_policy` and cache keys stopped taking a method argument. These are required methods, so existing implementations of the trait must delete them
+- The following unused dependencies: `async-compat`, `async-lock`, `cfg-if`, `dashmap`, `futures`, `hex`, `serde_json`
+
 ## [1.0.0-alpha.7] - 2026-07-22
 
 ### Added
