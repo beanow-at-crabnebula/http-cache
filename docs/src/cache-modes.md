@@ -155,6 +155,8 @@ let options = HttpCacheOptions {
             _ => Some(CacheMode::NoStore),
         }
     })),
+    // Forced responses without their own expiration are fresh for 10 minutes
+    default_ttl: Some(Duration::from_secs(600)),
     // Limit cache duration to 1 hour max
     max_ttl: Some(Duration::from_secs(3600)),
     ..Default::default()
@@ -208,6 +210,8 @@ let options = HttpCacheOptions {
     cache_key: Some(Arc::new(|req| {
         format!("{}:{}:{}", req.method, req.uri.host().unwrap_or(""), req.uri.path())
     })),
+    // Cache duration when the server doesn't specify one
+    default_ttl: Some(Duration::from_secs(300)), // 5 minutes
     // Maximum cache duration
     max_ttl: Some(Duration::from_secs(1800)), // 30 minutes
     // Add cache status headers for debugging
@@ -334,7 +338,8 @@ let options = HttpCacheOptions {
         vec![] // No cache busting by default
     })),
     
-    // Global cache duration limit
+    // Global cache duration default and limit
+    default_ttl: Some(Duration::from_secs(3600)),
     max_ttl: Some(Duration::from_secs(86400)),
     
     // Enable cache status headers for debugging
@@ -356,7 +361,7 @@ let cache = HttpCache {
 2. **Request-Based Cache Mode Override**: The `cache_mode_fn` allows overriding cache behavior based on request properties (headers, path, method, etc.)
 3. **Response-Based Cache Mode Override**: The `response_cache_mode_fn` allows overriding cache behavior based on both request and response data
 4. **Cache Busting**: The `cache_bust` function allows invalidating related cache entries
-5. **Global Settings**: Options like `max_ttl` and `cache_status_headers` provide global configuration
+5. **Global Settings**: Options like `default_ttl`, `max_ttl` and `cache_status_headers` provide global configuration
 
 All of these functions are called on a per-request basis, giving you complete control over caching behavior for each individual request.
 
