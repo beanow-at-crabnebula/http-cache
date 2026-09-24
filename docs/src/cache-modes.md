@@ -16,13 +16,9 @@ When constructing a new instance of `HttpCache`, you must specify a cache mode. 
 
 - `IgnoreRules`: This mode will ignore the HTTP headers and always store a response given it was a 200 status code. It will also ignore the staleness when retrieving a response from the cache, so expiration of the cached response will need to be handled manually. If there was no cached response it will create a normal request, and will update the cache with the response.
 
-## Maximum TTL Control
+## Default and Maximum TTL
 
-When using cache modes like `IgnoreRules` that bypass server cache headers, you can use the `max_ttl` option to provide expiration control. This is particularly useful for preventing cached responses from persisting indefinitely.
-
-### Usage
-
-The `max_ttl` option accepts a `Duration` and sets a maximum time-to-live for cached responses:
+The `default_ttl` and `max_ttl` options tune how long responses are considered fresh, for when you know more about your caching needs than the server's headers tell you. Both accept a `Duration`:
 
 ```rust
 use http_cache::{HttpCacheOptions, RedbManager, HttpCache, CacheMode};
@@ -31,52 +27,31 @@ use std::time::Duration;
 let manager = RedbManager::new("./http-cache.redb").unwrap();
 
 let options = HttpCacheOptions {
-    max_ttl: Some(Duration::from_secs(300)), // 5 minutes maximum
+    default_ttl: Some(Duration::from_secs(60)), // 1 minute when the server doesn't say
+    max_ttl: Some(Duration::from_secs(3600)),   // 1 hour maximum
     ..Default::default()
 };
 
-let cache = HttpCache {
-    mode: CacheMode::IgnoreRules, // Ignore server cache headers
-    manager,
-    options,
-};
-```
-
-### Behavior
-
-- **Override longer durations**: If the server specifies a longer cache duration (e.g., `max-age=3600`), `max_ttl` will reduce it to the specified limit
-- **Respect shorter durations**: If the server specifies a shorter duration (e.g., `max-age=60`), the server's shorter duration will be used
-- **Provide fallback duration**: When using `IgnoreRules` mode where server headers are ignored, `max_ttl` provides the cache duration
-
-### Examples
-
-**With IgnoreRules mode:**
-```rust
-// Cache everything for 5 minutes, ignoring server headers
-let options = HttpCacheOptions {
-    max_ttl: Some(Duration::from_secs(300)),
-    ..Default::default()
-};
-let cache = HttpCache {
-    mode: CacheMode::IgnoreRules,
-    manager,
-    options,
-};
-```
-
-**With Default mode:**
-```rust
-// Respect server headers but limit cache duration to 1 hour maximum
-let options = HttpCacheOptions {
-    max_ttl: Some(Duration::from_secs(3600)),
-    ..Default::default()
-};
 let cache = HttpCache {
     mode: CacheMode::Default,
     manager,
     options,
 };
 ```
+
+### `default_ttl`
+
+- **Applies without an explicit expiration**: When a response has no `max-age` directive and no `Expires` header (nor `s-maxage` in a shared cache), it is fresh for `default_ttl`
+- **Replaces the heuristic**: Without `default_ttl`, such responses are only fresh for a fraction of the time since their `Last-Modified` date, see `CacheOptions::cache_heuristic`. Without that header they're stale right away
+- **Respects the server**: Responses that may not be stored still aren't, `no-cache` responses are still revalidated on every use, and an invalid or past `Expires` still marks a response as stale
+
+### `max_ttl`
+
+- **Override longer durations**: If the server specifies a longer cache duration (e.g., `max-age=3600` or an `Expires` date), `max_ttl` will reduce it to the specified limit. This includes heuristic lifetimes and `default_ttl`
+- **Respect shorter durations**: If the server specifies a shorter duration (e.g., `max-age=60`), the server's shorter duration will be used
+- **Only a limit**: `max_ttl` does not make responses without an expiration fresh, use `default_ttl` for that
+
+Freshness is not checked by `ForceCache`, `OnlyIfCached` and `IgnoreRules`, so neither option expires responses in those modes.
 
 ## Content-Type Based Caching
 
