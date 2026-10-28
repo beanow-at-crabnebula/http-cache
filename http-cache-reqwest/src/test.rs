@@ -1199,11 +1199,19 @@ async fn no_duplicate_headers_on_revalidation() -> Result<()> {
 
 /// `(stored cache-control, status served)` when revalidating a stale 200 gets
 /// a 500.
-const SERVER_ERROR_ON_REVALIDATION: [(&str, u16); 2] = [
+/// The stored response's `Cache-Control`, whether it varies on a header that
+/// differs in the second request, and the status of the response to it.
+const SERVER_ERROR_ON_REVALIDATION: [(&str, bool, u16); 6] = [
     // Served stale, as if the server hadn't responded.
-    ("public, max-age=0", 200),
-    // `must-revalidate` forbids serving it stale, so the 500 is passed on.
-    ("public, must-revalidate", 500),
+    ("public, max-age=0", false, 200),
+    // These forbid serving it stale (a shared cache is the default), so the
+    // 500 is passed on.
+    ("public, must-revalidate", false, 500),
+    ("public, no-cache", false, 500),
+    ("public, max-age=0, proxy-revalidate", false, 500),
+    ("public, s-maxage=0", false, 500),
+    // The stored response is for another variant.
+    ("public, max-age=0", true, 500),
 ];
 
 /// Stores a stale 200 with `cache_control`, then revalidates it in `Default`
@@ -1211,10 +1219,18 @@ const SERVER_ERROR_ON_REVALIDATION: [(&str, u16); 2] = [
 async fn revalidate_with_server_error(
     cache: impl client_middleware::Middleware,
     cache_control: &str,
+    vary: bool,
     status: u16,
 ) -> Result<()> {
     let mock_server = MockServer::start().await;
-    let m = build_mock(cache_control, TEST_BODY, 200, 1);
+    let m = Mock::given(method(GET))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("cache-control", cache_control)
+                .insert_header("vary", "x-user")
+                .set_body_bytes(TEST_BODY),
+        )
+        .expect(1);
     let m_500 = Mock::given(method(GET))
         .respond_with(ResponseTemplate::new(500))
         .expect(1);
@@ -1222,12 +1238,13 @@ async fn revalidate_with_server_error(
     let url = format!("{}/", mock_server.uri());
     let client = ClientBuilder::new(Client::new()).with(cache).build();
 
-    client.get(&url).send().await?;
+    client.get(&url).header("x-user", "a").send().await?;
     drop(mock_guard);
     let _mock_guard = mock_server.register_as_scoped(m_500).await;
 
-    let res = client.get(&url).send().await?;
-    assert_eq!(res.status(), status, "with {cache_control:?}");
+    let user = if vary { "b" } else { "a" };
+    let res = client.get(&url).header("x-user", user).send().await?;
+    assert_eq!(res.status(), status, "with {cache_control:?}, vary {vary}");
     let stale = status == 200;
     assert_eq!(res.headers().contains_key("warning"), stale);
     let body: &[u8] = if stale { TEST_BODY } else { b"" };
@@ -1237,7 +1254,7 @@ async fn revalidate_with_server_error(
 
 #[tokio::test]
 async fn revalidation_500() -> Result<()> {
-    for (cache_control, status) in SERVER_ERROR_ON_REVALIDATION {
+    for (cache_control, vary, status) in SERVER_ERROR_ON_REVALIDATION {
         revalidate_with_server_error(
             Cache(HttpCache {
                 mode: CacheMode::Default,
@@ -1245,6 +1262,7 @@ async fn revalidation_500() -> Result<()> {
                 options: Default::default(),
             }),
             cache_control,
+            vary,
             status,
         )
         .await?;
@@ -1258,13 +1276,14 @@ async fn streaming_revalidation_500() -> Result<()> {
     use crate::StreamingCache;
     use http_cache::StreamingManager;
 
-    for (cache_control, status) in SERVER_ERROR_ON_REVALIDATION {
+    for (cache_control, vary, status) in SERVER_ERROR_ON_REVALIDATION {
         revalidate_with_server_error(
             StreamingCache::new(
                 StreamingManager::with_temp_dir(100).await?,
                 CacheMode::Default,
             ),
             cache_control,
+            vary,
             status,
         )
         .await?;

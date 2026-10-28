@@ -979,14 +979,6 @@ impl HttpResponse {
         Ok(())
     }
 
-    /// Checks if the Cache-Control header contains the must-revalidate directive
-    #[must_use]
-    fn must_revalidate(&self) -> bool {
-        self.headers.get(CACHE_CONTROL.as_str()).is_some_and(|val| {
-            val.as_str().to_lowercase().contains("must-revalidate")
-        })
-    }
-
     /// Adds the custom `x-cache` header to the response
     pub fn cache_status(&mut self, hit_or_miss: HitOrMiss) {
         self.headers.insert(XCACHE.to_string(), hit_or_miss.to_string());
@@ -2044,14 +2036,18 @@ fn response_remove_warning<B>(response: &mut Response<B>) {
     response.headers_mut().remove(WARNING);
 }
 
-/// Returns `true` if the `cache-control` header of the response contains the
-/// `must-revalidate` directive.
-fn response_must_revalidate<B>(response: &Response<B>) -> bool {
-    response
-        .headers()
-        .get(CACHE_CONTROL)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|val| val.to_lowercase().contains("must-revalidate"))
+/// RFC 9111 s4.2.4: whether a stored response may be served stale when
+/// revalidating it failed. `no-cache` and `must-revalidate` forbid that, and so
+/// do `proxy-revalidate` and `s-maxage` in a shared cache.
+fn allows_stale_on_error(headers: &http::HeaderMap, shared: bool) -> bool {
+    !cache_control_directives(headers).any(|directive| {
+        let directive = directive.to_ascii_lowercase();
+        is_directive(&directive, "no-cache")
+            || is_directive(&directive, "must-revalidate")
+            || (shared
+                && (is_directive(&directive, "proxy-revalidate")
+                    || is_directive(&directive, "s-maxage")))
+    })
 }
 
 /// Adds the custom `x-cache` status header to an `http::Response`.
@@ -2127,12 +2123,11 @@ fn merge_headers(dst: &mut http::HeaderMap, src: &http::HeaderMap) {
     }
 }
 
-/// The directives of every `Cache-Control` header on a response, trimmed.
+/// The directives of every `Cache-Control` header, trimmed.
 fn cache_control_directives(
-    parts: &response::Parts,
+    headers: &http::HeaderMap,
 ) -> impl Iterator<Item = &str> {
-    parts
-        .headers
+    headers
         .get_all(CACHE_CONTROL)
         .iter()
         .filter_map(|value| value.to_str().ok())
@@ -2152,7 +2147,7 @@ fn is_directive(directive: &str, name: &str) -> bool {
 /// invalid or in the past still counts, as it marks the response as stale.
 fn has_explicit_expiration(parts: &response::Parts, shared: bool) -> bool {
     parts.headers.contains_key(EXPIRES)
-        || cache_control_directives(parts).any(|directive| {
+        || cache_control_directives(&parts.headers).any(|directive| {
             is_directive(directive, "max-age")
                 || (shared && is_directive(directive, "s-maxage"))
         })
@@ -2163,7 +2158,7 @@ fn has_explicit_expiration(parts: &response::Parts, shared: bool) -> bool {
 /// `Expires` and heuristics, so other headers are left alone.
 fn with_max_age(parts: &response::Parts, ttl: Duration) -> response::Parts {
     let seconds = ttl.as_secs();
-    let mut directives: Vec<String> = cache_control_directives(parts)
+    let mut directives: Vec<String> = cache_control_directives(&parts.headers)
         .filter(|directive| !is_directive(directive, "max-age"))
         .map(|directive| {
             if is_directive(directive, "s-maxage") {
@@ -2535,6 +2530,11 @@ where
                 Ok(cached_res)
             }
             BeforeRequest::Stale { request: stale_parts, matches } => {
+                let serve_stale = matches
+                    && allows_stale_on_error(
+                        cached_res.headers(),
+                        self.options.cache_options.unwrap_or_default().shared,
+                    );
                 let req_url = extract_url_from_request_parts(parts)?;
                 // Apply rate limiting before revalidation request
                 self.apply_rate_limiting(&req_url).await;
@@ -2556,10 +2556,9 @@ where
 
                         // On a server error, act as if the server hadn't
                         // responded (RFC 9111 s4.3.3): serve the stale
-                        // response, unless must-revalidate forbids that.
-                        if status.is_server_error()
-                            && !response_must_revalidate(&cached_res)
-                        {
+                        // response, if it is the one for this request and
+                        // its directives allow that.
+                        if status.is_server_error() && serve_stale {
                             //   111 Revalidation failed
                             //   MUST be included if a cache returns a
                             //   stale response because an attempt to
@@ -2771,7 +2770,7 @@ where
                         }
                     }
                     Err(e) => {
-                        if response_must_revalidate(&cached_res) {
+                        if !serve_stale {
                             Err(e)
                         } else {
                             //   111 Revalidation failed
@@ -3064,7 +3063,7 @@ impl<T: CacheManager> HttpCache<T> {
     ) -> Result<HttpResponse> {
         let parts = middleware.parts()?;
         let before_req = policy.before_request(&parts, SystemTime::now());
-        match before_req {
+        let matches = match before_req {
             BeforeRequest::Fresh(mut parts) => {
                 drop_policy_cache_control(&mut parts.headers, None);
                 cached_res.update_headers(&parts)?;
@@ -3078,8 +3077,14 @@ impl<T: CacheManager> HttpCache<T> {
                 if matches {
                     middleware.update_headers(&parts)?;
                 }
+                matches
             }
-        }
+        };
+        let serve_stale = matches
+            && allows_stale_on_error(
+                &cached_res.parts()?.headers,
+                self.options.cache_options.unwrap_or_default().shared,
+            );
         let req_url = middleware.url()?;
         // Apply rate limiting before revalidation request
         self.apply_rate_limiting(&req_url).await;
@@ -3087,9 +3092,9 @@ impl<T: CacheManager> HttpCache<T> {
             Ok(mut cond_res) => {
                 let status = StatusCode::from_u16(cond_res.status)?;
                 // On a server error, act as if the server hadn't responded
-                // (RFC 9111 s4.3.3): serve the stale response, unless
-                // must-revalidate forbids that.
-                if status.is_server_error() && !cached_res.must_revalidate() {
+                // (RFC 9111 s4.3.3): serve the stale response, if it is the
+                // one for this request and its directives allow that.
+                if status.is_server_error() && serve_stale {
                     //   111 Revalidation failed
                     //   MUST be included if a cache returns a stale response
                     //   because an attempt to revalidate the response failed,
@@ -3194,7 +3199,7 @@ impl<T: CacheManager> HttpCache<T> {
                 }
             }
             Err(e) => {
-                if cached_res.must_revalidate() {
+                if !serve_stale {
                     Err(e)
                 } else {
                     //   111 Revalidation failed
