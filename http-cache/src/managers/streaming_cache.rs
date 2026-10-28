@@ -565,10 +565,9 @@ impl StreamingManager {
     async fn remove_stored(&self, cache_key: &str) {
         let exists = self.metadata.contains_key(cache_key)
             || !matches!(self.redb_get(cache_key).await, Ok(None));
-        if exists
-            && let Err(e) = StreamingCacheManager::delete(self, cache_key).await
-        {
-            log::debug!("put: removing the declined entry failed: {e}");
+        if exists {
+            // `delete` cleans up best-effort and doesn't return errors.
+            let _ = StreamingCacheManager::delete(self, cache_key).await;
         }
     }
 
@@ -1547,6 +1546,30 @@ mod tests {
 
     async fn read_body_bytes(resp: Response<ManagerBody>) -> Bytes {
         resp.into_body().collect().await.unwrap().to_bytes()
+    }
+
+    /// Stores an "old" response under `key`, for a declined put to remove.
+    async fn put_old_entry(manager: &StreamingManager, key: &str) {
+        let stored = manager
+            .put(
+                key.into(),
+                response_with_body(Bytes::from("old")),
+                sample_policy(),
+                test_url(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_body_bytes(stored).await, "old");
+        assert!(manager.get(key).await.unwrap().is_some());
+    }
+
+    /// Asserts nothing is stored under `key`: no metadata, no body file.
+    async fn assert_removed(manager: &StreamingManager, key: &str) {
+        assert!(manager.get(key).await.unwrap().is_none());
+        assert!(manager.redb_get(key).await.unwrap().is_none());
+        let body_path = body_path_for(&manager.body_dir, &body_hash_for(key));
+        assert!(!body_path.exists());
     }
 
     #[tokio::test]
@@ -2848,22 +2871,10 @@ mod tests {
         .await
         .unwrap();
         let key = "GET:https://example.com/test";
-        let body_path = body_path_for(&manager.body_dir, &body_hash_for(key));
 
         // Declined up front by its Content-Length, or while spooling.
         for content_length in [Some("7"), None] {
-            let stored = manager
-                .put(
-                    key.into(),
-                    response_with_body(Bytes::from("old")),
-                    sample_policy(),
-                    test_url(),
-                    None,
-                )
-                .await
-                .unwrap();
-            assert_eq!(read_body_bytes(stored).await, "old");
-            assert!(manager.get(key).await.unwrap().is_some());
+            put_old_entry(&manager, key).await;
 
             let mut response = response_with_body(Bytes::from("too big"));
             if let Some(content_length) = content_length {
@@ -2877,14 +2888,36 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(read_body_bytes(returned).await, "too big");
-
-            assert!(
-                manager.get(key).await.unwrap().is_none(),
-                "declined with content-length {content_length:?}"
-            );
-            assert!(manager.redb_get(key).await.unwrap().is_none());
-            assert!(!body_path.exists());
+            assert_removed(&manager, key).await;
         }
+    }
+
+    /// A put that can't spool, here because the tmp dir is unusable, also
+    /// removes the entry stored under its key.
+    #[tokio::test]
+    async fn test_put_spool_failure_removes_stored_entry() {
+        let dir = TempDir::new().unwrap();
+        let manager =
+            StreamingManager::new(dir.path().to_path_buf(), 100).await.unwrap();
+        let key = "GET:https://example.com/test";
+        put_old_entry(&manager, key).await;
+
+        let tmp_dir = dir.path().join("tmp");
+        std::fs::remove_dir_all(&tmp_dir).unwrap();
+        std::fs::write(&tmp_dir, b"not a directory").unwrap();
+
+        let returned = manager
+            .put(
+                key.into(),
+                response_with_body(Bytes::from("new")),
+                sample_policy(),
+                test_url(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_body_bytes(returned).await, "new");
+        assert_removed(&manager, key).await;
     }
 
     /// Exact boundary: body of exactly max_body_size IS cached.
@@ -2927,6 +2960,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let manager =
             StreamingManager::new(dir.path().to_path_buf(), 100).await.unwrap();
+        // A declined put also removes the entry stored before it.
+        put_old_entry(&manager, "GET:https://example.com/truncated").await;
         let body = Full::new(Bytes::from_static(b"short"));
         let response = Response::builder()
             .status(StatusCode::OK)
@@ -2945,13 +2980,7 @@ mod tests {
             .unwrap();
         let bytes = returned.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&bytes[..], b"short");
-        assert!(
-            manager
-                .get("GET:https://example.com/truncated")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert_removed(&manager, "GET:https://example.com/truncated").await;
     }
 
     /// Upstream body error mid-stream: put() errors (unchanged contract) and
