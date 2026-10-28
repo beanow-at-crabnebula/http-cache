@@ -559,6 +559,19 @@ impl StreamingManager {
         let _ = tokio::fs::remove_file(body_path).await;
     }
 
+    /// Removes the entry stored under `cache_key`, if there is one, so a
+    /// declined put doesn't leave an older response in place of the new one.
+    /// Skips the redb write when there isn't, since a decline can be routine.
+    async fn remove_stored(&self, cache_key: &str) {
+        let exists = self.metadata.contains_key(cache_key)
+            || !matches!(self.redb_get(cache_key).await, Ok(None));
+        if exists
+            && let Err(e) = StreamingCacheManager::delete(self, cache_key).await
+        {
+            log::debug!("put: removing the declined entry failed: {e}");
+        }
+    }
+
     /// Return the striped shard lock for the given body hash: get() takes
     /// it shared, put/delete/heal take it exclusive. Callers must not
     /// acquire a second shard lock while already holding one.
@@ -1078,22 +1091,295 @@ impl StreamingCacheManager for StreamingManager {
         <Self::Body as Body>::Error:
             Into<StreamingError> + Send + Sync + 'static,
     {
-        let mut stored = false;
-        let res = self
-            .spool_and_commit(
-                cache_key.clone(),
-                response,
-                policy,
-                user_metadata,
-                &mut stored,
-            )
-            .await?;
-        if !stored {
-            // Declining replaces the stored response with nothing, so an
-            // older response isn't served in place of this one.
+        let (parts, body) = response.into_parts();
+
+        // Normalize the incoming body once: Data -> Bytes, Error ->
+        // StreamingError, boxed so decline paths can hand it back out.
+        let mut inner: UnsyncBoxBody<Bytes, StreamingError> = body
+            .map_frame(|frame| {
+                frame.map_data(|mut d| d.copy_to_bytes(d.remaining()))
+            })
+            .map_err(Into::into)
+            .boxed_unsync();
+
+        // HEAD responses carry the entity's Content-Length with an empty
+        // body (RFC 9110 §8.6): exempt them from the CL-based size and
+        // completeness checks below.
+        let is_head = parts
+            .extensions
+            .get::<crate::CachedRequestMethod>()
+            .is_some_and(|m| m.0 == http::Method::HEAD);
+
+        // Decline before the stream is touched.
+        let content_length = parse_content_length(&parts.headers);
+        if self.max_body_size == 0
+            || (!is_head
+                && content_length.is_some_and(|cl| cl > self.max_body_size))
+        {
             self.remove_stored(&cache_key).await;
+            return Ok(Response::from_parts(
+                parts,
+                StreamingBody::streaming(inner),
+            ));
         }
-        Ok(res)
+
+        // Spool setup. Failures here degrade to pass-through; the stream has
+        // not been polled yet, so nothing is lost.
+        let body_hash = body_hash_for(&cache_key);
+        let tmp_suffix: u64 = rand::rng().random();
+        let tmp_path =
+            self.tmp_dir.join(format!("{body_hash}.{tmp_suffix:016x}.tmp"));
+        let final_dir = self.body_dir.join(&body_hash[0..2]);
+        if let Err(e) = tokio::fs::create_dir_all(&final_dir).await {
+            log::debug!(
+                "put: create body subdir failed; serving uncached: {e}"
+            );
+            self.remove_stored(&cache_key).await;
+            return Ok(Response::from_parts(
+                parts,
+                StreamingBody::streaming(inner),
+            ));
+        }
+        let final_path = final_dir.join(format!("{body_hash}.bin"));
+        let nonce: [u8; NONCE_LEN] = rand::rng().random();
+
+        // read+write: the same handle serves the response after commit.
+        let mut file = match tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+            .await
+        {
+            Ok(f) => f,
+            Err(e) => {
+                log::debug!("put: open tmp failed; serving uncached: {e}");
+                self.remove_stored(&cache_key).await;
+                return Ok(Response::from_parts(
+                    parts,
+                    StreamingBody::streaming(inner),
+                ));
+            }
+        };
+        // Construct the guard only after `create_new` succeeded: on EEXIST
+        // the tmp file belongs to another in-flight put, not to us.
+        let mut guard = TmpGuard::new(tmp_path.clone());
+        if let Err(e) = spool_write(&mut file, &nonce).await {
+            log::debug!("put: nonce write failed; serving uncached: {e}");
+            drop(file); // close before the guard unlinks
+            self.remove_stored(&cache_key).await;
+            return Ok(Response::from_parts(
+                parts,
+                StreamingBody::streaming(inner),
+            ));
+        }
+
+        // Spool loop: exactly one frame in flight. The size check precedes
+        // the write so the tmp file never exceeds max_body_size, and
+        // `written` counts flush-confirmed bytes (see `spool_write`).
+        let mut hasher = blake3::Hasher::new();
+        let mut written: u64 = 0;
+        loop {
+            match inner.frame().await {
+                None => break,
+                Some(Err(e)) => {
+                    // Upstream failed: fail the request; the guard unlinks
+                    // the tmp file.
+                    drop(file);
+                    return Err(Box::new(e));
+                }
+                Some(Ok(frame)) => {
+                    let Ok(data) = frame.into_data() else {
+                        // Trailer frame: the cache format has no trailers.
+                        continue;
+                    };
+                    if written + data.len() as u64 > self.max_body_size {
+                        // Unknown-length overflow: decline, keep serving.
+                        self.remove_stored(&cache_key).await;
+                        return serve_uncached_spooled(
+                            parts,
+                            file,
+                            guard,
+                            written,
+                            Some(data),
+                            Some(inner),
+                        );
+                    }
+                    if let Err(e) = spool_write(&mut file, &data).await {
+                        log::debug!(
+                            "put: spool write failed; serving uncached: {e}"
+                        );
+                        self.remove_stored(&cache_key).await;
+                        return serve_uncached_spooled(
+                            parts,
+                            file,
+                            guard,
+                            written,
+                            Some(data),
+                            Some(inner),
+                        );
+                    }
+                    hasher.update(&data);
+                    written += data.len() as u64;
+                }
+            }
+        }
+
+        // RFC 9111 §3.3: never store a response we know is incomplete.
+        if !is_head
+            && let Some(cl) = content_length
+            && cl != written
+        {
+            log::debug!(
+                "put: content-length {cl} != received {written}; \
+                 serving uncached (incomplete response)"
+            );
+            self.remove_stored(&cache_key).await;
+            return serve_uncached_spooled(
+                parts, file, guard, written, None, None,
+            );
+        }
+        if let Err(e) = file.sync_all().await {
+            log::debug!("put: fsync failed; serving uncached: {e}");
+            self.remove_stored(&cache_key).await;
+            return serve_uncached_spooled(
+                parts, file, guard, written, None, None,
+            );
+        }
+
+        let metadata = CacheMetadata {
+            status: parts.status.as_u16(),
+            version: version_to_u8(parts.version),
+            headers: stored_headers(&parts.headers),
+            body_size: written,
+            nonce,
+            checksum: *hasher.finalize().as_bytes(),
+            policy,
+            user_metadata,
+        };
+        let checksum = metadata.checksum;
+
+        // Serialization failure is a cache-side failure: decline, don't
+        // fail the request.
+        let serialized = match postcard::to_allocvec(&metadata) {
+            Ok(s) => s,
+            Err(e) => {
+                log::debug!(
+                    "put: metadata serialization failed; serving uncached: {e}"
+                );
+                self.remove_stored(&cache_key).await;
+                return serve_uncached_spooled(
+                    parts, file, guard, written, None, None,
+                );
+            }
+        };
+
+        // Publish under the shard write lock: rename -> redb commit -> moka.
+        {
+            let _guard_lock = self.key_lock(&body_hash).write().await;
+            if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
+                log::debug!("put: rename failed; serving uncached: {e}");
+                self.self_heal(&cache_key, &final_path).await;
+                return serve_uncached_spooled(
+                    parts, file, guard, written, None, None,
+                );
+            }
+            guard.defuse(); // tmp path no longer exists
+
+            let db = self.db.clone();
+            let key_for_redb = cache_key.clone();
+            let commit_result: Result<()> =
+                match tokio::task::spawn_blocking(move || -> Result<()> {
+                    let write_txn = db.begin_write().map_err(|e| {
+                        crate::HttpCacheError::cache(format!(
+                            "redb begin_write (put) failed: {e}"
+                        ))
+                    })?;
+                    {
+                        let mut table = write_txn
+                            .open_table(METADATA_TABLE)
+                            .map_err(|e| {
+                                crate::HttpCacheError::cache(format!(
+                                    "redb open_table (put) failed: {e}"
+                                ))
+                            })?;
+                        table
+                            .insert(
+                                key_for_redb.as_str(),
+                                serialized.as_slice(),
+                            )
+                            .map_err(|e| {
+                                crate::HttpCacheError::cache(format!(
+                                    "redb insert (put) failed: {e}"
+                                ))
+                            })?;
+                    }
+                    write_txn.commit().map_err(|e| {
+                        crate::HttpCacheError::cache(format!(
+                            "redb commit (put) failed: {e}"
+                        ))
+                    })?;
+                    Ok(())
+                })
+                .await
+                {
+                    Ok(inner_result) => inner_result,
+                    Err(e) => Err(Box::new(crate::HttpCacheError::cache(
+                        format!("put join failed: {e}"),
+                    ))),
+                };
+            if let Err(e) = commit_result {
+                // Roll back the rename (unlink final) so we don't leak an
+                // orphaned body, then keep serving from the open handle —
+                // the inode stays alive until the handle drops (Rust's std
+                // opens files with FILE_SHARE_DELETE on Windows, so the
+                // unlink is legal there too).
+                log::debug!("put: redb commit failed; serving uncached: {e}");
+                self.self_heal(&cache_key, &final_path).await;
+                return serve_uncached_spooled(
+                    parts, file, guard, written, None, None,
+                );
+            }
+            self.metadata.insert(cache_key.clone(), metadata).await;
+        }
+
+        // Serve from the same handle we just wrote: no reopen race with a
+        // concurrent put. Parts stay exactly as received; only the stored
+        // metadata got the hop-by-hop strip.
+        if let Err(e) =
+            file.seek(std::io::SeekFrom::Start(NONCE_LEN as u64)).await
+        {
+            // Entry is committed and valid; only our serving handle is
+            // broken. Fall back to a fresh get().
+            log::debug!("put: post-commit seek failed: {e}");
+            drop(file);
+            if let Some((resp, _)) = self.get(&cache_key).await? {
+                let (_, body) = resp.into_parts();
+                return Ok(Response::from_parts(parts, body));
+            }
+            return Err(crate::HttpCacheError::cache(format!(
+                "put: entry vanished after commit: {e}"
+            ))
+            .into());
+        }
+        let heal = CorruptHeal {
+            db: Arc::downgrade(&self.db),
+            metadata: self.metadata.clone(),
+            key_locks: self.key_locks.clone(),
+            key: cache_key,
+            body_hash,
+            body_path: final_path,
+            nonce,
+        };
+        let body = StreamingBody::from_file_verified(
+            file,
+            written,
+            checksum,
+            move || {
+                tokio::spawn(heal.run());
+            },
+        );
+        Ok(Response::from_parts(parts, body))
     }
 
     async fn update_metadata(
@@ -1223,318 +1509,6 @@ impl StreamingCacheManager for StreamingManager {
         <Self::Body as Body>::Error: Send + Sync + 'static,
     {
         body.into_bytes_stream()
-    }
-}
-
-impl StreamingManager {
-    /// Spools `response` to disk and commits it under `cache_key`, setting
-    /// `stored` once committed. Any other `Ok` is a decline: the response is
-    /// served without being stored.
-    async fn spool_and_commit<B>(
-        &self,
-        cache_key: String,
-        response: Response<B>,
-        policy: CachePolicy,
-        user_metadata: Option<Vec<u8>>,
-        stored: &mut bool,
-    ) -> Result<Response<ManagerBody>>
-    where
-        B: Body + Send + 'static,
-        B::Data: Send,
-        B::Error: Into<StreamingError>,
-    {
-        let (parts, body) = response.into_parts();
-
-        // Normalize the incoming body once: Data -> Bytes, Error ->
-        // StreamingError, boxed so decline paths can hand it back out.
-        let mut inner: UnsyncBoxBody<Bytes, StreamingError> = body
-            .map_frame(|frame| {
-                frame.map_data(|mut d| d.copy_to_bytes(d.remaining()))
-            })
-            .map_err(Into::into)
-            .boxed_unsync();
-
-        // HEAD responses carry the entity's Content-Length with an empty
-        // body (RFC 9110 §8.6): exempt them from the CL-based size and
-        // completeness checks below.
-        let is_head = parts
-            .extensions
-            .get::<crate::CachedRequestMethod>()
-            .is_some_and(|m| m.0 == http::Method::HEAD);
-
-        // Decline before the stream is touched.
-        let content_length = parse_content_length(&parts.headers);
-        if self.max_body_size == 0
-            || (!is_head
-                && content_length.is_some_and(|cl| cl > self.max_body_size))
-        {
-            return Ok(Response::from_parts(
-                parts,
-                StreamingBody::streaming(inner),
-            ));
-        }
-
-        // Spool setup. Failures here degrade to pass-through; the stream has
-        // not been polled yet, so nothing is lost.
-        let body_hash = body_hash_for(&cache_key);
-        let tmp_suffix: u64 = rand::rng().random();
-        let tmp_path =
-            self.tmp_dir.join(format!("{body_hash}.{tmp_suffix:016x}.tmp"));
-        let final_dir = self.body_dir.join(&body_hash[0..2]);
-        if let Err(e) = tokio::fs::create_dir_all(&final_dir).await {
-            log::debug!(
-                "put: create body subdir failed; serving uncached: {e}"
-            );
-            return Ok(Response::from_parts(
-                parts,
-                StreamingBody::streaming(inner),
-            ));
-        }
-        let final_path = final_dir.join(format!("{body_hash}.bin"));
-        let nonce: [u8; NONCE_LEN] = rand::rng().random();
-
-        // read+write: the same handle serves the response after commit.
-        let mut file = match tokio::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
-            .await
-        {
-            Ok(f) => f,
-            Err(e) => {
-                log::debug!("put: open tmp failed; serving uncached: {e}");
-                return Ok(Response::from_parts(
-                    parts,
-                    StreamingBody::streaming(inner),
-                ));
-            }
-        };
-        // Construct the guard only after `create_new` succeeded: on EEXIST
-        // the tmp file belongs to another in-flight put, not to us.
-        let mut guard = TmpGuard::new(tmp_path.clone());
-        if let Err(e) = spool_write(&mut file, &nonce).await {
-            log::debug!("put: nonce write failed; serving uncached: {e}");
-            drop(file); // close before the guard unlinks
-            return Ok(Response::from_parts(
-                parts,
-                StreamingBody::streaming(inner),
-            ));
-        }
-
-        // Spool loop: exactly one frame in flight. The size check precedes
-        // the write so the tmp file never exceeds max_body_size, and
-        // `written` counts flush-confirmed bytes (see `spool_write`).
-        let mut hasher = blake3::Hasher::new();
-        let mut written: u64 = 0;
-        loop {
-            match inner.frame().await {
-                None => break,
-                Some(Err(e)) => {
-                    // Upstream failed: fail the request; the guard unlinks
-                    // the tmp file.
-                    drop(file);
-                    return Err(Box::new(e));
-                }
-                Some(Ok(frame)) => {
-                    let Ok(data) = frame.into_data() else {
-                        // Trailer frame: the cache format has no trailers.
-                        continue;
-                    };
-                    if written + data.len() as u64 > self.max_body_size {
-                        // Unknown-length overflow: decline, keep serving.
-                        return serve_uncached_spooled(
-                            parts,
-                            file,
-                            guard,
-                            written,
-                            Some(data),
-                            Some(inner),
-                        );
-                    }
-                    if let Err(e) = spool_write(&mut file, &data).await {
-                        log::debug!(
-                            "put: spool write failed; serving uncached: {e}"
-                        );
-                        return serve_uncached_spooled(
-                            parts,
-                            file,
-                            guard,
-                            written,
-                            Some(data),
-                            Some(inner),
-                        );
-                    }
-                    hasher.update(&data);
-                    written += data.len() as u64;
-                }
-            }
-        }
-
-        // RFC 9111 §3.3: never store a response we know is incomplete.
-        if !is_head
-            && let Some(cl) = content_length
-            && cl != written
-        {
-            log::debug!(
-                "put: content-length {cl} != received {written}; \
-                 serving uncached (incomplete response)"
-            );
-            return serve_uncached_spooled(
-                parts, file, guard, written, None, None,
-            );
-        }
-        if let Err(e) = file.sync_all().await {
-            log::debug!("put: fsync failed; serving uncached: {e}");
-            return serve_uncached_spooled(
-                parts, file, guard, written, None, None,
-            );
-        }
-
-        let metadata = CacheMetadata {
-            status: parts.status.as_u16(),
-            version: version_to_u8(parts.version),
-            headers: stored_headers(&parts.headers),
-            body_size: written,
-            nonce,
-            checksum: *hasher.finalize().as_bytes(),
-            policy,
-            user_metadata,
-        };
-        let checksum = metadata.checksum;
-
-        // Serialization failure is a cache-side failure: decline, don't
-        // fail the request.
-        let serialized = match postcard::to_allocvec(&metadata) {
-            Ok(s) => s,
-            Err(e) => {
-                log::debug!(
-                    "put: metadata serialization failed; serving uncached: {e}"
-                );
-                return serve_uncached_spooled(
-                    parts, file, guard, written, None, None,
-                );
-            }
-        };
-
-        // Publish under the shard write lock: rename -> redb commit -> moka.
-        {
-            let _guard_lock = self.key_lock(&body_hash).write().await;
-            if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
-                log::debug!("put: rename failed; serving uncached: {e}");
-                return serve_uncached_spooled(
-                    parts, file, guard, written, None, None,
-                );
-            }
-            guard.defuse(); // tmp path no longer exists
-
-            let db = self.db.clone();
-            let key_for_redb = cache_key.clone();
-            let commit_result: Result<()> =
-                match tokio::task::spawn_blocking(move || -> Result<()> {
-                    let write_txn = db.begin_write().map_err(|e| {
-                        crate::HttpCacheError::cache(format!(
-                            "redb begin_write (put) failed: {e}"
-                        ))
-                    })?;
-                    {
-                        let mut table = write_txn
-                            .open_table(METADATA_TABLE)
-                            .map_err(|e| {
-                                crate::HttpCacheError::cache(format!(
-                                    "redb open_table (put) failed: {e}"
-                                ))
-                            })?;
-                        table
-                            .insert(
-                                key_for_redb.as_str(),
-                                serialized.as_slice(),
-                            )
-                            .map_err(|e| {
-                                crate::HttpCacheError::cache(format!(
-                                    "redb insert (put) failed: {e}"
-                                ))
-                            })?;
-                    }
-                    write_txn.commit().map_err(|e| {
-                        crate::HttpCacheError::cache(format!(
-                            "redb commit (put) failed: {e}"
-                        ))
-                    })?;
-                    Ok(())
-                })
-                .await
-                {
-                    Ok(inner_result) => inner_result,
-                    Err(e) => Err(Box::new(crate::HttpCacheError::cache(
-                        format!("put join failed: {e}"),
-                    ))),
-                };
-            if let Err(e) = commit_result {
-                // Roll back the rename (unlink final) so we don't leak an
-                // orphaned body, then keep serving from the open handle —
-                // the inode stays alive until the handle drops (Rust's std
-                // opens files with FILE_SHARE_DELETE on Windows, so the
-                // unlink is legal there too).
-                log::debug!("put: redb commit failed; serving uncached: {e}");
-                let _ = tokio::fs::remove_file(&final_path).await;
-                return serve_uncached_spooled(
-                    parts, file, guard, written, None, None,
-                );
-            }
-            self.metadata.insert(cache_key.clone(), metadata).await;
-            *stored = true;
-        }
-
-        // Serve from the same handle we just wrote: no reopen race with a
-        // concurrent put. Parts stay exactly as received; only the stored
-        // metadata got the hop-by-hop strip.
-        if let Err(e) =
-            file.seek(std::io::SeekFrom::Start(NONCE_LEN as u64)).await
-        {
-            // Entry is committed and valid; only our serving handle is
-            // broken. Fall back to a fresh get().
-            log::debug!("put: post-commit seek failed: {e}");
-            drop(file);
-            if let Some((resp, _)) = self.get(&cache_key).await? {
-                let (_, body) = resp.into_parts();
-                return Ok(Response::from_parts(parts, body));
-            }
-            return Err(crate::HttpCacheError::cache(format!(
-                "put: entry vanished after commit: {e}"
-            ))
-            .into());
-        }
-        let heal = CorruptHeal {
-            db: Arc::downgrade(&self.db),
-            metadata: self.metadata.clone(),
-            key_locks: self.key_locks.clone(),
-            key: cache_key,
-            body_hash,
-            body_path: final_path,
-            nonce,
-        };
-        let body = StreamingBody::from_file_verified(
-            file,
-            written,
-            checksum,
-            move || {
-                tokio::spawn(heal.run());
-            },
-        );
-        Ok(Response::from_parts(parts, body))
-    }
-
-    /// Removes the entry stored under `cache_key`, if there is one. Skips
-    /// the redb write when there isn't, since a decline can be routine.
-    async fn remove_stored(&self, cache_key: &str) {
-        let exists = self.metadata.contains_key(cache_key)
-            || !matches!(self.redb_get(cache_key).await, Ok(None));
-        if exists
-            && let Err(e) = StreamingCacheManager::delete(self, cache_key).await
-        {
-            log::debug!("put: removing the declined entry failed: {e}");
-        }
     }
 }
 
