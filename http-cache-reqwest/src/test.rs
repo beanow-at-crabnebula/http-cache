@@ -414,7 +414,8 @@ fn full_response_body(status: u16) -> &'static [u8] {
 }
 
 /// Stores a stale 200, then revalidates it in `Default` mode and gets a full
-/// `status` response with `cache_control`, which is passed on as is. When
+/// `status` response with `cache_control`, which is passed on as is. The 200
+/// has `must-revalidate`, so a server error is passed on too. When
 /// `stored` is fresh, a third request must be served from the cache. Returns
 /// the cache key.
 async fn revalidate_with_full_response(
@@ -440,7 +441,7 @@ async fn revalidate_with_full_response(
     Mock::given(method(GET))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("cache-control", "max-age=0")
+                .insert_header("cache-control", "max-age=0, must-revalidate")
                 .insert_header("etag", ETAG)
                 .set_body_bytes(TEST_BODY),
         )
