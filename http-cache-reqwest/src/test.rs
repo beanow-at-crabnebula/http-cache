@@ -368,15 +368,24 @@ async fn ttl_applies_after_revalidating_streaming_responses() -> Result<()> {
 
 /// `(status, cache-control, status stored afterwards)` for a full response to
 /// the revalidation of a stored 200.
-const FULL_RESPONSE_ON_REVALIDATION: [(u16, &str, Option<u16>); 4] = [
+const FULL_RESPONSE_ON_REVALIDATION: [(u16, Option<&str>, Option<u16>); 7] = [
     // An uncacheable response removes the stored one.
-    (200, "no-store", None),
-    (410, "no-store", None),
+    (200, Some("no-store"), None),
+    (204, Some("no-store"), None),
+    (410, Some("no-store"), None),
     // A cacheable response replaces it, whatever its status.
-    (404, CACHEABLE_PUBLIC, Some(404)),
+    (204, Some("max-age=60"), Some(204)),
+    (404, Some(CACHEABLE_PUBLIC), Some(404)),
+    // Including statuses that are cacheable by default without caching headers.
+    (204, None, Some(204)),
     // A server error keeps it.
-    (503, "no-store", Some(200)),
+    (503, Some("no-store"), Some(200)),
 ];
+
+/// The body of the full response to a revalidation with `status`.
+fn full_response_body(status: u16) -> &'static [u8] {
+    if status == 204 { b"" } else { b"updated" }
+}
 
 /// Stores a stale 200, then revalidates it in `Default` mode and gets a full
 /// `status` response with `cache_control`. Returns that response and the
@@ -384,17 +393,19 @@ const FULL_RESPONSE_ON_REVALIDATION: [(u16, &str, Option<u16>); 4] = [
 async fn revalidate_with_full_response(
     cache: impl client_middleware::Middleware,
     status: u16,
-    cache_control: &str,
+    cache_control: Option<&str>,
 ) -> Result<(reqwest::Response, String)> {
     const ETAG: &str = "\"v1\"";
+    let template = ResponseTemplate::new(status)
+        .set_body_bytes(full_response_body(status));
+    let template = match cache_control {
+        Some(value) => template.insert_header("cache-control", value),
+        None => template,
+    };
     let mock_server = MockServer::start().await;
     Mock::given(method(GET))
         .and(header("if-none-match", ETAG))
-        .respond_with(
-            ResponseTemplate::new(status)
-                .insert_header("cache-control", cache_control)
-                .set_body_bytes(&b"updated"[..]),
-        )
+        .respond_with(template)
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -431,7 +442,7 @@ async fn full_response_on_revalidation_replaces_buffered_entry() -> Result<()> {
         )
         .await?;
         assert_eq!(res.status(), status);
-        assert_eq!(res.bytes().await?, &b"updated"[..]);
+        assert_eq!(res.bytes().await?, full_response_body(status));
         let entry = CacheManager::get(&manager, &key).await?;
         assert_eq!(
             entry.map(|(res, _)| res.status),
@@ -458,7 +469,7 @@ async fn full_response_on_revalidation_replaces_streaming_entry() -> Result<()>
         )
         .await?;
         assert_eq!(res.status(), status);
-        assert_eq!(res.bytes().await?, &b"updated"[..]);
+        assert_eq!(res.bytes().await?, full_response_body(status));
         let entry = StreamingCacheManager::get(&manager, &key).await?;
         assert_eq!(
             entry.map(|(res, _)| res.status().as_u16()),
