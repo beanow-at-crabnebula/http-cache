@@ -366,6 +366,164 @@ async fn ttl_applies_after_revalidating_streaming_responses() -> Result<()> {
     Ok(())
 }
 
+/// What the cache holds after the revalidation of a stored 200.
+#[derive(Clone, Copy, Debug)]
+enum Stored {
+    /// Nothing: the stored 200 was removed.
+    Nothing,
+    /// The stored 200, which is still stale.
+    Old,
+    /// The full response, fresh, so the next request is served from it.
+    Fresh,
+    /// The full response, already stale.
+    Stale,
+}
+
+impl Stored {
+    /// The status and body stored after a full `status` response.
+    fn entry(self, status: u16) -> Option<(u16, &'static [u8])> {
+        match self {
+            Stored::Nothing => None,
+            Stored::Old => Some((200, TEST_BODY)),
+            Stored::Fresh | Stored::Stale => {
+                Some((status, full_response_body(status)))
+            }
+        }
+    }
+}
+
+/// `(status, cache-control, what's stored afterwards)` for a full response to
+/// the revalidation of a stored 200.
+const FULL_RESPONSE_ON_REVALIDATION: [(u16, Option<&str>, Stored); 7] = [
+    // An uncacheable response removes the stored one.
+    (200, Some("no-store"), Stored::Nothing),
+    (204, Some("no-store"), Stored::Nothing),
+    (410, Some("no-store"), Stored::Nothing),
+    // A cacheable response replaces it, whatever its status.
+    (204, Some("max-age=60"), Stored::Fresh),
+    (404, Some(CACHEABLE_PUBLIC), Stored::Fresh),
+    // Including statuses that are cacheable by default without caching headers.
+    (204, None, Stored::Stale),
+    // A server error keeps it.
+    (503, Some("no-store"), Stored::Old),
+];
+
+/// The body of the full response to a revalidation with `status`.
+fn full_response_body(status: u16) -> &'static [u8] {
+    if status == 204 { b"" } else { b"updated" }
+}
+
+/// Stores a stale 200, then revalidates it in `Default` mode and gets a full
+/// `status` response with `cache_control`, which is passed on as is. When
+/// `stored` is fresh, a third request must be served from the cache. Returns
+/// the cache key.
+async fn revalidate_with_full_response(
+    cache: impl client_middleware::Middleware,
+    status: u16,
+    cache_control: Option<&str>,
+    stored: Stored,
+) -> Result<String> {
+    const ETAG: &str = "\"v1\"";
+    let template = ResponseTemplate::new(status)
+        .set_body_bytes(full_response_body(status));
+    let template = match cache_control {
+        Some(value) => template.insert_header("cache-control", value),
+        None => template,
+    };
+    let mock_server = MockServer::start().await;
+    Mock::given(method(GET))
+        .and(header("if-none-match", ETAG))
+        .respond_with(template)
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+    Mock::given(method(GET))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("cache-control", "max-age=0")
+                .insert_header("etag", ETAG)
+                .set_body_bytes(TEST_BODY),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+    let url = format!("{}/", mock_server.uri());
+    let client = ClientBuilder::new(Client::new()).with(cache).build();
+
+    client.get(&url).send().await?;
+    let res = client.get(&url).send().await?;
+    assert_eq!(res.status(), status);
+    assert_eq!(res.headers()[XCACHE], "MISS");
+    assert_eq!(res.bytes().await?, full_response_body(status));
+
+    if let Stored::Fresh = stored {
+        // The mocks' `expect(1)` also rule out another server request.
+        let res = client.get(&url).send().await?;
+        assert_eq!(res.status(), status);
+        assert_eq!(res.headers()[XCACHE], "HIT");
+        assert_eq!(res.bytes().await?, full_response_body(status));
+    }
+    Ok(format!("{}:{}", GET, url_parse(&url)?))
+}
+
+#[tokio::test]
+async fn full_response_on_revalidation_replaces_buffered_entry() -> Result<()> {
+    for (status, cache_control, stored) in FULL_RESPONSE_ON_REVALIDATION {
+        let manager = create_cache_manager();
+        let key = revalidate_with_full_response(
+            Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: manager.clone(),
+                options: Default::default(),
+            }),
+            status,
+            cache_control,
+            stored,
+        )
+        .await?;
+        let entry = CacheManager::get(&manager, &key).await?;
+        assert_eq!(
+            entry.as_ref().map(|(res, _)| (res.status, &res.body[..])),
+            stored.entry(status),
+            "after a {status} with {cache_control:?}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "streaming")]
+#[tokio::test]
+async fn full_response_on_revalidation_replaces_streaming_entry() -> Result<()>
+{
+    use crate::StreamingCache;
+    use http_body_util::BodyExt;
+    use http_cache::StreamingManager;
+
+    for (status, cache_control, stored) in FULL_RESPONSE_ON_REVALIDATION {
+        let manager = StreamingManager::with_temp_dir(100).await?;
+        let key = revalidate_with_full_response(
+            StreamingCache::new(manager.clone(), CacheMode::Default),
+            status,
+            cache_control,
+            stored,
+        )
+        .await?;
+        let entry = match StreamingCacheManager::get(&manager, &key).await? {
+            Some((res, _)) => {
+                let status = res.status().as_u16();
+                Some((status, res.into_body().collect().await?.to_bytes()))
+            }
+            None => None,
+        };
+        assert_eq!(
+            entry.as_ref().map(|(status, body)| (*status, &body[..])),
+            stored.entry(status),
+            "after a {status} with {cache_control:?}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn no_cache_mode() -> Result<()> {
     let mock_server = MockServer::start().await;

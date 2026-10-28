@@ -2669,9 +2669,9 @@ where
                                 ),
                             }
                             Ok(cached_res)
-                        } else if status == StatusCode::OK {
-                            // 200 OK — fresh response, create new policy
-                            // and cache
+                        } else {
+                            // A full response replaces the stored one
+                            // (RFC 9111 s4.3.3), whatever its status.
                             let (cond_parts, cond_body) = cond_res.into_parts();
                             let new_policy = self
                                 .options
@@ -2733,6 +2733,8 @@ where
                                 );
                             }
 
+                            let cache_key =
+                                self.options.create_cache_key(parts, None);
                             if is_cacheable {
                                 cond_res.extensions_mut().insert(
                                     CachedRequestMethod(parts.method.clone()),
@@ -2740,8 +2742,7 @@ where
                                 let res = self
                                     .manager
                                     .put(
-                                        self.options
-                                            .create_cache_key(parts, None),
+                                        cache_key,
                                         cond_res,
                                         new_policy,
                                         request_url,
@@ -2750,25 +2751,23 @@ where
                                     .await?;
                                 Ok(res)
                             } else {
+                                // Drop the stored response so it isn't
+                                // served in place of this one. On a server
+                                // error, keep it as if the server hadn't
+                                // responded (RFC 9111 s4.3.3).
+                                if !status.is_server_error()
+                                    && let Err(e) =
+                                        self.manager.delete(&cache_key).await
+                                {
+                                    log::debug!(
+                                        "streaming revalidation: failed to \
+                                         remove the replaced entry: {e}"
+                                    );
+                                }
                                 let res =
                                     self.manager.convert_body(cond_res).await?;
                                 Ok(res)
                             }
-                        } else {
-                            // Any other status — return fresh response
-                            let mut res =
-                                self.manager.convert_body(cond_res).await?;
-                            if self.options.cache_status_headers {
-                                response_cache_status(
-                                    &mut res,
-                                    HitOrMiss::MISS,
-                                );
-                                response_cache_lookup_status(
-                                    &mut res,
-                                    HitOrMiss::HIT,
-                                );
-                            }
-                            Ok(res)
                         }
                     }
                     Err(e) => {
@@ -3140,7 +3139,9 @@ impl<T: CacheManager> HttpCache<T> {
                         )
                         .await?;
                     Ok(res)
-                } else if cond_res.status == 200 {
+                } else {
+                    // A full response replaces the stored one (RFC 9111
+                    // s4.3.3), whatever its status.
                     let response_parts = cond_res.parts()?;
                     let policy = self
                         .options
@@ -3168,26 +3169,28 @@ impl<T: CacheManager> HttpCache<T> {
                         &policy,
                     );
 
+                    let cache_key = self.options.create_cache_key(&parts, None);
                     if is_cacheable {
                         let res = self
                             .manager
-                            .put(
-                                self.options.create_cache_key(&parts, None),
-                                cond_res,
-                                policy,
-                            )
+                            .put(cache_key, cond_res, policy)
                             .await?;
                         Ok(res)
                     } else {
+                        // Drop the stored response so it isn't served in
+                        // place of this one. On a server error, keep it as if
+                        // the server hadn't responded (RFC 9111 s4.3.3).
+                        if !status.is_server_error()
+                            && let Err(e) =
+                                self.manager.delete(&cache_key).await
+                        {
+                            log::debug!(
+                                "revalidation: failed to remove the replaced \
+                                 entry: {e}"
+                            );
+                        }
                         Ok(cond_res)
                     }
-                } else {
-                    // Return fresh response for any status other than 304 or 200
-                    if self.options.cache_status_headers {
-                        cond_res.cache_status(HitOrMiss::MISS);
-                        cond_res.cache_lookup_status(HitOrMiss::HIT);
-                    }
-                    Ok(cond_res)
                 }
             }
             Err(e) => {
