@@ -2554,8 +2554,11 @@ where
                     Ok(cond_res) => {
                         let status = cond_res.status();
 
+                        // On a server error, act as if the server hadn't
+                        // responded (RFC 9111 s4.3.3): serve the stale
+                        // response, unless must-revalidate forbids that.
                         if status.is_server_error()
-                            && response_must_revalidate(&cached_res)
+                            && !response_must_revalidate(&cached_res)
                         {
                             //   111 Revalidation failed
                             //   MUST be included if a cache returns a
@@ -3084,7 +3087,10 @@ impl<T: CacheManager> HttpCache<T> {
         match middleware.remote_fetch().await {
             Ok(mut cond_res) => {
                 let status = StatusCode::from_u16(cond_res.status)?;
-                if status.is_server_error() && cached_res.must_revalidate() {
+                // On a server error, act as if the server hadn't responded
+                // (RFC 9111 s4.3.3): serve the stale response, unless
+                // must-revalidate forbids that.
+                if status.is_server_error() && !cached_res.must_revalidate() {
                     //   111 Revalidation failed
                     //   MUST be included if a cache returns a stale response
                     //   because an attempt to revalidate the response failed,

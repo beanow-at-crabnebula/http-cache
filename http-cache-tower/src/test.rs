@@ -941,10 +941,10 @@ mod tests {
                     };
 
                     if count == 1 {
-                        // First request - return cacheable response with must-revalidate
+                        // First request - return cacheable, already stale response
                         Ok(Response::builder()
                             .status(StatusCode::OK)
-                            .header("cache-control", "public, must-revalidate")
+                            .header("cache-control", "public, max-age=0")
                             .header("etag", "\"123456\"")
                             .header("content-type", "text/plain")
                             .body(Full::new(Bytes::from(TEST_BODY)))?)
@@ -973,10 +973,10 @@ mod tests {
         let response1 = cached_service.ready().await?.call(request1).await?;
         assert_eq!(response1.status(), StatusCode::OK);
 
-        // Second request - the origin returns 500 during revalidation of a
-        // must-revalidate response.  Per RFC 7234, the core returns the stale
-        // cached response (200 OK) with a "111 Revalidation failed" warning
-        // header instead of forwarding the 5xx.
+        // Second request - the origin returns 500 during revalidation.  Per
+        // RFC 9111 s4.3.3, the core acts as if the server hadn't responded and
+        // returns the stale cached response (200 OK) with a "111 Revalidation
+        // failed" warning header instead of forwarding the 5xx.
         let request2 = Request::builder()
             .uri("https://example.com/revalidate-500")
             .method("GET")

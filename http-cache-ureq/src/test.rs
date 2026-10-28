@@ -595,7 +595,7 @@ async fn revalidation_500() {
     let temp_dir = TempDir::new().unwrap();
     let manager = CACacheManager::new(temp_dir.path().into(), true);
     let mock_server = MockServer::start().await;
-    let m = build_mock(MUST_REVALIDATE, TEST_BODY, 200, 1);
+    let m = build_mock("public, max-age=0", TEST_BODY, 200, 1);
     let m_500 = Mock::given(method(GET))
         .respond_with(ResponseTemplate::new(500))
         .expect(1);

@@ -1038,42 +1038,78 @@ async fn no_duplicate_headers_on_revalidation() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn revalidation_500() -> Result<()> {
+/// `(stored cache-control, status served)` when revalidating a stale 200 gets
+/// a 500.
+const SERVER_ERROR_ON_REVALIDATION: [(&str, u16); 2] = [
+    // Served stale, as if the server hadn't responded.
+    ("public, max-age=0", 200),
+    // `must-revalidate` forbids serving it stale, so the 500 is passed on.
+    ("public, must-revalidate", 500),
+];
+
+/// Stores a stale 200 with `cache_control`, then revalidates it in `Default`
+/// mode and gets a 500. Checks that the response is `status`.
+async fn revalidate_with_server_error(
+    cache: impl client_middleware::Middleware,
+    cache_control: &str,
+    status: u16,
+) -> Result<()> {
     let mock_server = MockServer::start().await;
-    let m = build_mock("public, must-revalidate", TEST_BODY, 200, 1);
+    let m = build_mock(cache_control, TEST_BODY, 200, 1);
     let m_500 = Mock::given(method(GET))
         .respond_with(ResponseTemplate::new(500))
         .expect(1);
     let mock_guard = mock_server.register_as_scoped(m).await;
     let url = format!("{}/", mock_server.uri());
-    let manager = create_cache_manager();
+    let client = ClientBuilder::new(Client::new()).with(cache).build();
 
-    // Construct reqwest client with cache defaults
-    let client = ClientBuilder::new(Client::new())
-        .with(Cache(HttpCache {
-            mode: CacheMode::Default,
-            manager: manager.clone(),
-            options: Default::default(),
-        }))
-        .build();
-
-    // Cold pass to load cache
-    client.get(url.clone()).send().await?;
-
+    client.get(&url).send().await?;
     drop(mock_guard);
     let _mock_guard = mock_server.register_as_scoped(m_500).await;
 
-    // Try to load cached object
-    let data =
-        CacheManager::get(&manager, &format!("{}:{}", GET, url_parse(&url)?))
-            .await?;
-    assert!(data.is_some());
+    let res = client.get(&url).send().await?;
+    assert_eq!(res.status(), status, "with {cache_control:?}");
+    let stale = status == 200;
+    assert_eq!(res.headers().contains_key("warning"), stale);
+    let body: &[u8] = if stale { TEST_BODY } else { b"" };
+    assert_eq!(res.bytes().await?, body);
+    Ok(())
+}
 
-    // Hot pass to make sure revalidation request was sent
-    let res = client.get(url).send().await?;
-    assert!(res.headers().get("warning").is_some());
-    assert_eq!(res.bytes().await?, TEST_BODY);
+#[tokio::test]
+async fn revalidation_500() -> Result<()> {
+    for (cache_control, status) in SERVER_ERROR_ON_REVALIDATION {
+        revalidate_with_server_error(
+            Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: create_cache_manager(),
+                options: Default::default(),
+            }),
+            cache_control,
+            status,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "streaming")]
+#[tokio::test]
+async fn streaming_revalidation_500() -> Result<()> {
+    use crate::StreamingCache;
+    use http_cache::StreamingManager;
+
+    for (cache_control, status) in SERVER_ERROR_ON_REVALIDATION {
+        revalidate_with_server_error(
+            StreamingCache::new(
+                StreamingManager::with_temp_dir(100).await?,
+                CacheMode::Default,
+            ),
+            cache_control,
+            status,
+        )
+        .await?;
+    }
     Ok(())
 }
 

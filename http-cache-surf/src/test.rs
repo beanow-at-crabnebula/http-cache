@@ -509,7 +509,7 @@ mod with_moka {
     #[tokio::test]
     async fn revalidation_500() -> Result<()> {
         let mock_server = MockServer::start().await;
-        let m = build_mock(MUST_REVALIDATE, TEST_BODY, 200, 1);
+        let m = build_mock("public, max-age=0", TEST_BODY, 200, 1);
         let m_500 = Mock::given(method(GET))
             .respond_with(ResponseTemplate::new(500))
             .expect(1);
