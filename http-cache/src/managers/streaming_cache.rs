@@ -1078,6 +1078,171 @@ impl StreamingCacheManager for StreamingManager {
         <Self::Body as Body>::Error:
             Into<StreamingError> + Send + Sync + 'static,
     {
+        let mut stored = false;
+        let res = self
+            .spool_and_commit(
+                cache_key.clone(),
+                response,
+                policy,
+                user_metadata,
+                &mut stored,
+            )
+            .await?;
+        if !stored {
+            // Declining replaces the stored response with nothing, so an
+            // older response isn't served in place of this one.
+            self.remove_stored(&cache_key).await;
+        }
+        Ok(res)
+    }
+
+    async fn update_metadata(
+        &self,
+        cache_key: &str,
+        headers: &http::HeaderMap,
+        policy: CachePolicy,
+        user_metadata: Option<Vec<u8>>,
+        token: Option<&crate::CacheEntryToken>,
+    ) -> Result<bool> {
+        let body_hash = body_hash_for(cache_key);
+        let _guard = self.key_lock(&body_hash).write().await;
+
+        // redb is authoritative; moka may lag.
+        let Some(mut metadata) = self.redb_get(cache_key).await? else {
+            // Entry vanished (evicted/healed). Drop any stale moka row.
+            self.metadata.invalidate(cache_key).await;
+            return Ok(false);
+        };
+
+        // Identity check: refuse to staple this revision's headers onto a
+        // concurrently-stored replacement entry's body.
+        if let Some(t) = token
+            && t.0.as_slice() != metadata.nonce
+        {
+            return Ok(false);
+        }
+
+        metadata.headers = stored_headers(headers);
+        metadata.policy = policy;
+        metadata.user_metadata = user_metadata;
+        // nonce/checksum/body_size stay as-is, which also keeps CorruptHeal
+        // correct for a corrupt read already in flight.
+
+        let serialized = postcard::to_allocvec(&metadata).map_err(|e| {
+            crate::HttpCacheError::cache(format!(
+                "Failed to serialize metadata: {e}"
+            ))
+        })?;
+        let db = self.db.clone();
+        let key_for_redb = cache_key.to_string();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let write_txn = db.begin_write().map_err(|e| {
+                crate::HttpCacheError::cache(format!(
+                    "redb begin_write (update_metadata) failed: {e}"
+                ))
+            })?;
+            {
+                let mut table =
+                    write_txn.open_table(METADATA_TABLE).map_err(|e| {
+                        crate::HttpCacheError::cache(format!(
+                            "redb open_table (update_metadata) failed: {e}"
+                        ))
+                    })?;
+                table
+                    .insert(key_for_redb.as_str(), serialized.as_slice())
+                    .map_err(|e| {
+                        crate::HttpCacheError::cache(format!(
+                            "redb insert (update_metadata) failed: {e}"
+                        ))
+                    })?;
+            }
+            write_txn.commit().map_err(|e| {
+                crate::HttpCacheError::cache(format!(
+                    "redb commit (update_metadata) failed: {e}"
+                ))
+            })?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| {
+            crate::HttpCacheError::cache(format!(
+                "update_metadata join failed: {e}"
+            ))
+        })??;
+
+        self.metadata.insert(cache_key.to_string(), metadata).await;
+        Ok(true)
+    }
+
+    async fn convert_body<B>(
+        &self,
+        response: Response<B>,
+    ) -> Result<Response<Self::Body>>
+    where
+        B: Body + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<StreamingError>,
+        <Self::Body as Body>::Data: Send,
+        <Self::Body as Body>::Error:
+            Into<StreamingError> + Send + Sync + 'static,
+    {
+        // Non-cacheable responses pass through without buffering.
+        Ok(response.map(|body| {
+            StreamingBody::streaming(
+                body.map_frame(|frame| {
+                    frame.map_data(|mut d| d.copy_to_bytes(d.remaining()))
+                })
+                .map_err(Into::into)
+                .boxed_unsync(),
+            )
+        }))
+    }
+
+    async fn delete(&self, cache_key: &str) -> Result<()> {
+        let body_hash = body_hash_for(cache_key);
+        let body_path = body_path_for(&self.body_dir, &body_hash);
+        let _guard = self.key_lock(&body_hash).write().await;
+        self.self_heal(cache_key, &body_path).await;
+        Ok(())
+    }
+
+    fn empty_body(&self) -> Self::Body {
+        StreamingBody::buffered(Bytes::new())
+    }
+
+    fn body_to_bytes_stream(
+        body: Self::Body,
+    ) -> impl futures_util::Stream<
+        Item = std::result::Result<
+            Bytes,
+            Box<dyn std::error::Error + Send + Sync>,
+        >,
+    > + Send
+    where
+        <Self::Body as Body>::Data: Send,
+        <Self::Body as Body>::Error: Send + Sync + 'static,
+    {
+        body.into_bytes_stream()
+    }
+}
+
+impl StreamingManager {
+    /// Spools `response` to disk and commits it under `cache_key`, setting
+    /// `stored` once committed. Any other `Ok` is a decline: the response is
+    /// served without being stored.
+    async fn spool_and_commit<B>(
+        &self,
+        cache_key: String,
+        response: Response<B>,
+        policy: CachePolicy,
+        user_metadata: Option<Vec<u8>>,
+        stored: &mut bool,
+    ) -> Result<Response<ManagerBody>>
+    where
+        B: Body + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<StreamingError>,
+    {
         let (parts, body) = response.into_parts();
 
         // Normalize the incoming body once: Data -> Bytes, Error ->
@@ -1318,6 +1483,7 @@ impl StreamingCacheManager for StreamingManager {
                 );
             }
             self.metadata.insert(cache_key.clone(), metadata).await;
+            *stored = true;
         }
 
         // Serve from the same handle we just wrote: no reopen race with a
@@ -1359,133 +1525,16 @@ impl StreamingCacheManager for StreamingManager {
         Ok(Response::from_parts(parts, body))
     }
 
-    async fn update_metadata(
-        &self,
-        cache_key: &str,
-        headers: &http::HeaderMap,
-        policy: CachePolicy,
-        user_metadata: Option<Vec<u8>>,
-        token: Option<&crate::CacheEntryToken>,
-    ) -> Result<bool> {
-        let body_hash = body_hash_for(cache_key);
-        let _guard = self.key_lock(&body_hash).write().await;
-
-        // redb is authoritative; moka may lag.
-        let Some(mut metadata) = self.redb_get(cache_key).await? else {
-            // Entry vanished (evicted/healed). Drop any stale moka row.
-            self.metadata.invalidate(cache_key).await;
-            return Ok(false);
-        };
-
-        // Identity check: refuse to staple this revision's headers onto a
-        // concurrently-stored replacement entry's body.
-        if let Some(t) = token
-            && t.0.as_slice() != metadata.nonce
+    /// Removes the entry stored under `cache_key`, if there is one. Skips
+    /// the redb write when there isn't, since a decline can be routine.
+    async fn remove_stored(&self, cache_key: &str) {
+        let exists = self.metadata.contains_key(cache_key)
+            || !matches!(self.redb_get(cache_key).await, Ok(None));
+        if exists
+            && let Err(e) = StreamingCacheManager::delete(self, cache_key).await
         {
-            return Ok(false);
+            log::debug!("put: removing the declined entry failed: {e}");
         }
-
-        metadata.headers = stored_headers(headers);
-        metadata.policy = policy;
-        metadata.user_metadata = user_metadata;
-        // nonce/checksum/body_size stay as-is, which also keeps CorruptHeal
-        // correct for a corrupt read already in flight.
-
-        let serialized = postcard::to_allocvec(&metadata).map_err(|e| {
-            crate::HttpCacheError::cache(format!(
-                "Failed to serialize metadata: {e}"
-            ))
-        })?;
-        let db = self.db.clone();
-        let key_for_redb = cache_key.to_string();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let write_txn = db.begin_write().map_err(|e| {
-                crate::HttpCacheError::cache(format!(
-                    "redb begin_write (update_metadata) failed: {e}"
-                ))
-            })?;
-            {
-                let mut table =
-                    write_txn.open_table(METADATA_TABLE).map_err(|e| {
-                        crate::HttpCacheError::cache(format!(
-                            "redb open_table (update_metadata) failed: {e}"
-                        ))
-                    })?;
-                table
-                    .insert(key_for_redb.as_str(), serialized.as_slice())
-                    .map_err(|e| {
-                        crate::HttpCacheError::cache(format!(
-                            "redb insert (update_metadata) failed: {e}"
-                        ))
-                    })?;
-            }
-            write_txn.commit().map_err(|e| {
-                crate::HttpCacheError::cache(format!(
-                    "redb commit (update_metadata) failed: {e}"
-                ))
-            })?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| {
-            crate::HttpCacheError::cache(format!(
-                "update_metadata join failed: {e}"
-            ))
-        })??;
-
-        self.metadata.insert(cache_key.to_string(), metadata).await;
-        Ok(true)
-    }
-
-    async fn convert_body<B>(
-        &self,
-        response: Response<B>,
-    ) -> Result<Response<Self::Body>>
-    where
-        B: Body + Send + 'static,
-        B::Data: Send,
-        B::Error: Into<StreamingError>,
-        <Self::Body as Body>::Data: Send,
-        <Self::Body as Body>::Error:
-            Into<StreamingError> + Send + Sync + 'static,
-    {
-        // Non-cacheable responses pass through without buffering.
-        Ok(response.map(|body| {
-            StreamingBody::streaming(
-                body.map_frame(|frame| {
-                    frame.map_data(|mut d| d.copy_to_bytes(d.remaining()))
-                })
-                .map_err(Into::into)
-                .boxed_unsync(),
-            )
-        }))
-    }
-
-    async fn delete(&self, cache_key: &str) -> Result<()> {
-        let body_hash = body_hash_for(cache_key);
-        let body_path = body_path_for(&self.body_dir, &body_hash);
-        let _guard = self.key_lock(&body_hash).write().await;
-        self.self_heal(cache_key, &body_path).await;
-        Ok(())
-    }
-
-    fn empty_body(&self) -> Self::Body {
-        StreamingBody::buffered(Bytes::new())
-    }
-
-    fn body_to_bytes_stream(
-        body: Self::Body,
-    ) -> impl futures_util::Stream<
-        Item = std::result::Result<
-            Bytes,
-            Box<dyn std::error::Error + Send + Sync>,
-        >,
-    > + Send
-    where
-        <Self::Body as Body>::Data: Send,
-        <Self::Body as Body>::Error: Send + Sync + 'static,
-    {
-        body.into_bytes_stream()
     }
 }
 
@@ -2810,6 +2859,58 @@ mod tests {
         let tmp_entries =
             std::fs::read_dir(dir.path().join("tmp")).unwrap().count();
         assert_eq!(tmp_entries, 0);
+    }
+
+    /// A declined put removes the entry already stored under its key, so the
+    /// older response isn't served in place of the new one.
+    #[tokio::test]
+    async fn test_put_decline_removes_stored_entry() {
+        let dir = TempDir::new().unwrap();
+        let manager = StreamingManager::with_max_body_size(
+            dir.path().to_path_buf(),
+            100,
+            5,
+        )
+        .await
+        .unwrap();
+        let key = "GET:https://example.com/test";
+        let body_path = body_path_for(&manager.body_dir, &body_hash_for(key));
+
+        // Declined up front by its Content-Length, or while spooling.
+        for content_length in [Some("7"), None] {
+            let stored = manager
+                .put(
+                    key.into(),
+                    response_with_body(Bytes::from("old")),
+                    sample_policy(),
+                    test_url(),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(read_body_bytes(stored).await, "old");
+            assert!(manager.get(key).await.unwrap().is_some());
+
+            let mut response = response_with_body(Bytes::from("too big"));
+            if let Some(content_length) = content_length {
+                response.headers_mut().insert(
+                    http::header::CONTENT_LENGTH,
+                    http::HeaderValue::from_static(content_length),
+                );
+            }
+            let returned = manager
+                .put(key.into(), response, sample_policy(), test_url(), None)
+                .await
+                .unwrap();
+            assert_eq!(read_body_bytes(returned).await, "too big");
+
+            assert!(
+                manager.get(key).await.unwrap().is_none(),
+                "declined with content-length {content_length:?}"
+            );
+            assert!(manager.redb_get(key).await.unwrap().is_none());
+            assert!(!body_path.exists());
+        }
     }
 
     /// Exact boundary: body of exactly max_body_size IS cached.
